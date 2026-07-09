@@ -1,0 +1,5 @@
+node_modules
+build/certificates/*.pfx
+build/certificates/*.pvk
+*.pfx
+*.pvk

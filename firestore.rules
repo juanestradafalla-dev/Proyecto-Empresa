@@ -1,0 +1,223 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email == "juanestradafalla@gmail.com";
+    }
+
+    function userPath() {
+      return /databases/$(database)/documents/usuarios/$(request.auth.uid);
+    }
+
+    function hasUserDoc() {
+      return signedIn() && exists(userPath());
+    }
+
+    function userData() {
+      return get(userPath()).data;
+    }
+
+    function isActiveUser() {
+      return isOwner()
+        || (
+          hasUserDoc()
+          && (
+            userData().activo == true
+            || userData().estado in ["activo", "Activo", "ACTIVO"]
+            || userData().rol in [
+              "owner", "Owner", "OWNER",
+              "admin", "Admin", "ADMIN",
+              "administrador", "Administrador", "ADMINISTRADOR",
+              "almacenista", "Almacenista", "ALMACENISTA",
+              "operador", "Operador", "OPERADOR"
+            ]
+          )
+        );
+    }
+
+    function protectedProfileFieldsChanged() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        "rol", "role", "activo", "estado", "permisos"
+      ]);
+    }
+
+    function isSharedBusinessCollection(collectionName) {
+      return collectionName in [
+        // GestionAndroid apps + desktop-program
+        "existencias",
+        "catalogo_personalizado",
+        "movimientos",
+        "productos_aseo",
+        "productos_aseo_archivados",
+        "areas_aseo",
+        "areas_cop",
+        "herramientas",
+        "entradas",
+        "vencimientos",
+        "correcciones_registros",
+        "memoria_ia",
+        "backups",
+        "sistema",
+
+        // Mantenimiento Preventivo Maestro
+        "mantenimiento_preventivo_maestro_catalogo",
+        "mantenimiento_preventivo_maestro_historial",
+        "mantenimiento_preventivo_maestro_reportes",
+        "mantenimiento_preventivo_maestro_trabajadores",
+        "mantenimiento_preventivo_maestro_auditoria",
+
+        // Nombres legacy de mantenimiento, por si quedaron datos viejos.
+        "mantenimientoPreventivo_equipos",
+        "mantenimientoPreventivo_registros"
+      ];
+    }
+
+    function isValidFieldReportCreate() {
+      return signedIn()
+        && request.resource.data.keys().hasOnly([
+          "equipo_id",
+          "equipo_codigo",
+          "equipo_nombre",
+          "fecha",
+          "trabajador",
+          "trabajador_uid",
+          "trabajador_nombre",
+          "trabajador_alias",
+          "tipo_reporte",
+          "descripcion",
+          "fotoUrl",
+          "fotoPath",
+          "estado_reporte",
+          "origen",
+          "creado_en",
+          "user_uid"
+        ])
+        && request.resource.data.equipo_id is string
+        && request.resource.data.equipo_codigo is string
+        && request.resource.data.equipo_nombre is string
+        && request.resource.data.fecha is string
+        && request.resource.data.trabajador is string
+        && request.resource.data.trabajador_uid == request.auth.uid
+        && request.resource.data.trabajador_nombre is string
+        && request.resource.data.trabajador_alias is string
+        && request.resource.data.tipo_reporte in ["falla", "inspeccion", "limpieza", "daño"]
+        && request.resource.data.descripcion is string
+        && request.resource.data.estado_reporte == "pendiente"
+        && request.resource.data.origen in ["app_android_qr", "app_qr", "portal_reportador"]
+        && request.resource.data.user_uid == request.auth.uid
+        && request.resource.data.equipo_codigo.size() > 0
+        && request.resource.data.trabajador.size() > 0
+        && request.resource.data.descripcion.size() > 0
+        && request.resource.data.descripcion.size() <= 4000;
+    }
+
+    function isValidWorkerProfile(workerUid) {
+      return signedIn()
+        && workerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          "uid",
+          "nombre",
+          "alias",
+          "nombre_mostrado",
+          "dispositivo",
+          "origen",
+          "actualizado_en",
+          "creado_en"
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.nombre is string
+        && request.resource.data.alias is string
+        && request.resource.data.nombre_mostrado is string
+        && request.resource.data.dispositivo is string
+        && request.resource.data.origen == "app_android_reportes"
+        && request.resource.data.nombre.size() > 0
+        && request.resource.data.nombre.size() <= 160
+        && request.resource.data.alias.size() <= 120
+        && request.resource.data.nombre_mostrado.size() <= 240;
+    }
+
+    function isValidAuditCreate() {
+      return signedIn()
+        && request.resource.data.keys().hasOnly([
+          "evento",
+          "trabajador_uid",
+          "trabajador_nombre",
+          "trabajador_alias",
+          "trabajador",
+          "origen",
+          "dispositivo",
+          "creado_en",
+          "trabajador_anterior",
+          "alias_anterior",
+          "reporte_id",
+          "equipo_codigo",
+          "tipo_reporte",
+          "fotoPath",
+          "tiene_evidencia"
+        ])
+        && request.resource.data.evento in [
+          "trabajador_registrado",
+          "trabajador_actualizado",
+          "reporte_creado"
+        ]
+        && request.resource.data.trabajador_uid == request.auth.uid
+        && request.resource.data.trabajador_nombre is string
+        && request.resource.data.trabajador_alias is string
+        && request.resource.data.trabajador is string
+        && request.resource.data.origen == "app_android_reportes"
+        && request.resource.data.dispositivo is string
+        && request.resource.data.trabajador_nombre.size() > 0
+        && request.resource.data.trabajador_nombre.size() <= 160
+        && request.resource.data.trabajador.size() <= 240;
+    }
+
+    match /conversacion_ia/{uid}/mensajes/{mensajeId} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /mantenimiento_preventivo_maestro_reportes/{reporteId} {
+      allow create: if isValidFieldReportCreate();
+      allow read, update, delete: if isActiveUser();
+    }
+
+    match /mantenimiento_preventivo_maestro_trabajadores/{workerUid} {
+      allow create, update: if isValidWorkerProfile(workerUid);
+      allow read: if isActiveUser() || (signedIn() && workerUid == request.auth.uid);
+      allow delete: if isActiveUser();
+    }
+
+    match /mantenimiento_preventivo_maestro_auditoria/{auditId} {
+      allow create: if isValidAuditCreate();
+      allow read, update, delete: if isActiveUser();
+    }
+
+    match /usuarios/{uid} {
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && !(request.resource.data.rol in ["admin", "administrador", "owner"])
+        && request.resource.data.activo != true;
+
+      allow read: if isActiveUser() || (signedIn() && request.auth.uid == uid);
+
+      allow update: if isOwner()
+        || (
+          signedIn()
+          && request.auth.uid == uid
+          && !protectedProfileFieldsChanged()
+        );
+
+      allow delete: if isOwner();
+    }
+
+    match /{collectionName}/{document=**} {
+      allow read, write: if isSharedBusinessCollection(collectionName) && isActiveUser();
+    }
+  }
+}

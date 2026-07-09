@@ -1,0 +1,33 @@
+Agrega una función para exportar un Excel profesional de movimientos de inventario usando ExcelJS.
+
+El archivo debe llamarse:
+Reporte_Movimientos_ARLES.xlsx
+
+Debe incluir:
+- Logo de la empresa
+- Nombre: ARLES S.A.S.
+- Título: REPORTE DE MOVIMIENTOS DE INVENTARIO
+- Periodo filtrado
+- Fecha de exportación
+- Usuario que generó el reporte
+
+Debe tener 5 hojas:
+1. Resumen
+2. Movimientos generales
+3. Entradas
+4. Salidas
+5. Consolidado por producto
+
+Columnas en movimientos generales:
+Fecha, Tipo de movimiento, Código, Nombre del producto, Submódulo, Subcategoría, Cantidad entrada, Cantidad salida, Unidad, Saldo anterior, Saldo nuevo, Responsable, Observación y Documento soporte.
+
+Aplicar:
+- Encabezados en negrita
+- Bordes
+- Ajuste de ancho de columnas
+- Filtros automáticos
+- Filas alternadas
+- Congelar encabezado
+- Totales al final
+
+Usar dialog.showSaveDialog en Electron para guardar el archivo.

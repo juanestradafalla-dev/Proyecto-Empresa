@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Gestion Arles</string>
+    <string name="version_label">v%s</string>
+    <string name="back_label">Volver</string>
+    <string name="scan_hint">Escanear codigo</string>
+    <string name="search_label">Buscador de Productos</string>
+    <!-- Descripciones de uso de permisos para Google Play -->
+    <string name="camera_usage_description">Esta aplicacion utiliza la camara unicamente para escanear codigos QR y codigos de barras de los productos del inventario.</string>
+    <string name="microphone_usage_description">Esta aplicacion utiliza el microfono para permitir que el Asistente IA procese ordenes de inventario mediante comandos de voz.</string>
+</resources>

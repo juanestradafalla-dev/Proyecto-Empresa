@@ -1,0 +1,16 @@
+{
+  "name": "gestion-aplicaciones",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Contenedor de proyectos separados para Gestion Arles.",
+  "scripts": {
+    "mobile1:debug": "cd mobile-app-1 && gradle :app:assembleDebug --warning-mode all",
+    "mobile1:release": "cd mobile-app-1 && gradle :app:assembleRelease --warning-mode all",
+    "mobile2:debug": "cd mobile-app-2 && gradle :app:assembleDebug --warning-mode all",
+    "mobile2:release": "cd mobile-app-2 && gradle :app:assembleRelease --warning-mode all",
+    "desktop:build": "cd desktop-program && npm run build",
+    "desktop:dev": "cd desktop-program && npm run dev",
+    "desktop:exe": "cd desktop-program && npm run dist:exe",
+    "functions:deploy": "firebase deploy --only functions"
+  }
+}

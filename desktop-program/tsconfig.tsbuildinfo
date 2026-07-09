@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/agroquimicoscanonicos.ts","./src/electron.d.ts","./src/firebase.ts","./src/main.tsx","./src/reportemovimientosexcel.ts","./src/tallercanonicos.ts","./src/theme.ts","./src/vite-env.d.ts","./src/ui/assignqrmodal.tsx","./src/ui/submodulebuttons.tsx","./src/ui/toggleoccupied.tsx"],"version":"5.9.3"}

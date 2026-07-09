@@ -1,0 +1,48 @@
+{
+  "appId": "com.arlessas.gestion.almacen",
+  "productName": "Gestion Almacen Arles",
+  "copyright": "Copyright (c) 2026 Arles SAS",
+  "directories": {
+    "output": "release-store"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "assets/icon.ico",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "assets/icon.ico",
+      "to": "icon.ico"
+    }
+  ],
+  "win": {
+    "icon": "assets/icon.ico",
+    "requestedExecutionLevel": "asInvoker",
+    "target": [
+      {
+        "target": "appx",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "appx": {
+    "identityName": "AlmacenArlesSAS.GestionAlmacenArles",
+    "applicationId": "GestionAlmacenArles",
+    "displayName": "Gestion Almacen Arles",
+    "publisher": "CN=35B41BDE-4BBF-48D6-95D7-0ADAF9D3433B",
+    "publisherDisplayName": "AlmacenArlesSAS",
+    "backgroundColor": "#0f5132",
+    "capabilities": [
+      "runFullTrust",
+      "internetClient"
+    ],
+    "languages": [
+      "es-CO"
+    ],
+    "showNameOnTiles": false
+  }
+}

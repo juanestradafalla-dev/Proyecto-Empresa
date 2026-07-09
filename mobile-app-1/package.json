@@ -1,0 +1,11 @@
+{
+  "name": "gestion-mobile-principal",
+  "private": true,
+  "version": "4.0.0",
+  "description": "Aplicacion movil principal Gestion Arles.",
+  "scripts": {
+    "debug": "gradle :app:assembleDebug --warning-mode all",
+    "release": "gradle :app:assembleRelease --warning-mode all",
+    "clean": "gradle clean"
+  }
+}
