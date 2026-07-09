@@ -192,7 +192,10 @@ internal fun MainActivity.interpretarOrdenLocal(prompt: String): Map<String, Str
 internal fun MainActivity.hablarAsistente(texto: String) {
     val limpio = texto.trim()
     if (limpio.isBlank()) return
-    if (!ttsReady) return
+    if (!ttsReady) {
+        inicializarTextToSpeechDiferido()
+        return
+    }
     try {
         tts.speak(limpio, TextToSpeech.QUEUE_FLUSH, null, "ia_${System.currentTimeMillis()}")
     } catch (_: Exception) {
@@ -826,6 +829,7 @@ internal fun MainActivity.showAIScreen(initialText: String = "", @Suppress("UNUS
     }
 
 internal fun MainActivity.showAIDialog(initialText: String = "") {
+        inicializarTextToSpeechDiferido()
         if (aiDialog?.isShowing == true) {
             activeAIInput?.setText(initialText)
             val chat = activeAIChatContainer

@@ -72,6 +72,20 @@ class MainActivity : ComponentActivity() {
     internal var onSmartScanResult: ((String, String, String, String) -> Unit)? = null
     internal var currentScreenBackAction: (() -> Unit)? = null
     internal var currentScreenRenderer: () -> Unit = { showMainMenu() }
+    internal var currentScreenId: String = ""
+    internal var lastScreenRenderAtMs: Long = 0L
+    internal var lastBackPressAtMs: Long = 0L
+    internal var handlingBackPress: Boolean = false
+    internal var deferredStartupTasksScheduled: Boolean = false
+    internal var mainMenuRequestInFlight: Boolean = false
+    internal var mainMenuUserIdCache: String = ""
+    internal var mainMenuSaludoCache: String = ""
+    internal var lastProfileSyncAtMs: Long = 0L
+    internal var lastProfileSyncUserId: String = ""
+    internal var catalogoSincronizando: Boolean = false
+    internal var catalogoSyncRepetirAlFinalizar: Boolean = false
+    internal var lastCatalogSyncAtMs: Long = 0L
+    internal val catalogoSyncCallbacks: MutableList<() -> Unit> = mutableListOf()
     internal var aiDialog: Dialog? = null
     internal var activeAIInput: EditText? = null
     internal var activeAIChatContainer: LinearLayout? = null
@@ -183,7 +197,52 @@ class MainActivity : ComponentActivity() {
         super.attachBaseContext(UiDisplayConfig.wrapContext(newBase))
     }
 
+    internal fun inicializarTextToSpeechDiferido() {
+        if (::tts.isInitialized) return
+        val start = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("PerfPrincipal", "TextToSpeech inicio")
+        tts = TextToSpeech(this) { status ->
+            if (status != TextToSpeech.ERROR) {
+                tts.language = Locale("es", "ES")
+                tts.setPitch(1.0f)
+                tts.setSpeechRate(1.1f)
+                ttsReady = true
+                android.util.Log.d(
+                    "PerfPrincipal",
+                    "TextToSpeech fin ${android.os.SystemClock.elapsedRealtime() - start}ms"
+                )
+            } else {
+                android.util.Log.w("PerfPrincipal", "TextToSpeech no disponible")
+            }
+        }
+    }
+
+    private fun programarTareasDiferidasArranque() {
+        if (deferredStartupTasksScheduled) return
+        deferredStartupTasksScheduled = true
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            val start = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d("PerfPrincipal", "tareas diferidas ejecutadas inicio")
+            if (!AppMode.esTallerIndependiente) {
+                sincronizarQuimicosCanonicosFirebase()
+                sincronizarAseoCanonicoFirebase()
+            }
+            sincronizarCatalogo(usarCacheSiReciente = true)
+            intentarSincronizarPendientes()
+            if (!AppMode.esTallerIndependiente) {
+                ejecutarBackupAutomaticoSiCorresponde()
+            }
+            android.util.Log.d(
+                "PerfPrincipal",
+                "tareas diferidas ejecutadas fin ${android.os.SystemClock.elapsedRealtime() - start}ms"
+            )
+        }, 750L)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        val start = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("PerfPrincipal", "onCreate inicio")
         super.onCreate(savedInstanceState)
         db = GestionDbHelper(this)
         auth = FirebaseAuth.getInstance()
@@ -192,15 +251,6 @@ class MainActivity : ComponentActivity() {
         functions = FirebaseFunctions.getInstance("us-central1")
         performanceConfig = AppPerformanceConfig(this)
         
-        tts = TextToSpeech(this) { status ->
-            if (status != TextToSpeech.ERROR) {
-                tts.language = Locale("es", "ES")
-                tts.setPitch(1.0f)
-                tts.setSpeechRate(1.1f) // Un poco más rápido para naturalidad
-                ttsReady = true
-            }
-        }
-
         onBackPressedDispatcher.addCallback(
             this,
             object : OnBackPressedCallback(true) {
@@ -210,16 +260,9 @@ class MainActivity : ComponentActivity() {
             },
         )
 
-        if (!AppMode.esTallerIndependiente) {
-            sincronizarQuimicosCanonicosFirebase()
-            sincronizarAseoCanonicoFirebase()
-        }
-        sincronizarCatalogo()
-        intentarSincronizarPendientes()
-        if (!AppMode.esTallerIndependiente) {
-            ejecutarBackupAutomaticoSiCorresponde()
-        }
         showMainMenu()
+        programarTareasDiferidasArranque()
+        android.util.Log.d("PerfPrincipal", "onCreate fin ${android.os.SystemClock.elapsedRealtime() - start}ms")
     }
 
     override fun onDestroy() {

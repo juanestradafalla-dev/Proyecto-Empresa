@@ -412,11 +412,24 @@ internal fun MainActivity.ejecutarBackupManual() {
 }
 
 internal fun MainActivity.ejecutarBackupAutomaticoSiCorresponde() {
+    val start = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfPrincipal", "backup automático inicio")
     val prefs = getSharedPreferences("gestion_config", Context.MODE_PRIVATE)
     val hoy = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
     val ultimo = prefs.getString("ultimo_backup_fecha", "")
     if (ultimo != hoy) {
-        ejecutarBackupManual()
+        Thread {
+            try {
+                ejecutarBackupManual()
+            } finally {
+                android.util.Log.d(
+                    "PerfPrincipal",
+                    "backup automático fin ${android.os.SystemClock.elapsedRealtime() - start}ms ejecutado=true"
+                )
+            }
+        }.start()
+    } else {
+        android.util.Log.d("PerfPrincipal", "backup automático fin ${android.os.SystemClock.elapsedRealtime() - start}ms ejecutado=false")
     }
 }
 
@@ -1037,14 +1050,28 @@ internal fun MainActivity.ejecutarReorganizacionInventario() {
 }
 
 internal fun MainActivity.handleBackPress() {
-    if (aiDialog?.isShowing == true) {
-        aiDialog?.dismiss()
+    val start = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfPrincipal", "handleBackPress inicio pantalla=$currentScreenId")
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (handlingBackPress || now - lastBackPressAtMs < 350L) {
+        android.util.Log.d("PerfPrincipal", "handleBackPress fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitido=debounce")
         return
     }
-    val action = currentScreenBackAction
-    if (action != null) {
-        action()
-    } else {
-        finish()
+    lastBackPressAtMs = now
+    handlingBackPress = true
+    try {
+        if (aiDialog?.isShowing == true) {
+            aiDialog?.dismiss()
+            return
+        }
+        val action = currentScreenBackAction
+        if (action != null) {
+            action()
+        } else {
+            finish()
+        }
+    } finally {
+        handlingBackPress = false
+        android.util.Log.d("PerfPrincipal", "handleBackPress fin ${android.os.SystemClock.elapsedRealtime() - start}ms")
     }
 }

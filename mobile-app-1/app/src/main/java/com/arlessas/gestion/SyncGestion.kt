@@ -98,97 +98,114 @@ internal fun MainActivity.encolarMovimientoOffline(
 }
 
 internal fun MainActivity.intentarSincronizarPendientes() {
-    if (!isNetworkAvailable() || isSyncing.get()) return
+    val start = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfPrincipal", "intentarSincronizarPendientes inicio")
+    if (!isNetworkAvailable()) {
+        android.util.Log.d("PerfPrincipal", "intentarSincronizarPendientes fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitida=sin_red")
+        return
+    }
+    if (!isSyncing.compareAndSet(false, true)) {
+        android.util.Log.d("PerfPrincipal", "intentarSincronizarPendientes fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitida=en_curso")
+        return
+    }
     
     val pendientes = db.obtenerPendientesSync(10) // Procesar de 10 en 10
-    if (pendientes.isEmpty()) return
-    
-    isSyncing.set(true)
+    if (pendientes.isEmpty()) {
+        isSyncing.set(false)
+        android.util.Log.d("PerfPrincipal", "intentarSincronizarPendientes fin ${android.os.SystemClock.elapsedRealtime() - start}ms pendientes=0")
+        return
+    }
     
     Thread {
-        pendientes.forEach { pendiente ->
-            try {
-                val type = object : TypeToken<Map<String, Any?>>() {}.type
-                val data: MutableMap<String, Any?> = Gson().fromJson(pendiente.payloadJson, type)
-                val coleccion = pendiente.coleccion.trim().ifBlank { "movimientos" }
-                
-                val fotoUrlActual = data["fotoUrl"]?.toString().orEmpty()
-                val fotoLocal = data["fotoLocalUri"]?.toString().orEmpty()
-                    .ifBlank { fotoUrlActual.takeIf { esUriLocalEvidencia(it) }.orEmpty() }
-                var cloudUrl = ""
-                
-                // 1. Si hay foto local, subirla primero
-                if (fotoLocal.isNotBlank()) {
-                    val latch = java.util.concurrent.CountDownLatch(1)
-                    subirEvidenciaCloud(fotoLocal, data["modulo"]?.toString() ?: "varios") { url ->
-                        cloudUrl = url
-                        latch.countDown()
-                    }
-                    latch.await(60, java.util.concurrent.TimeUnit.SECONDS)
-                    if (cloudUrl.isBlank()) {
-                        val errorFoto = "Timeout o fallo subiendo evidencia local (60s)"
-                        db.actualizarPendienteSyncError(pendiente.id, errorFoto)
-                        android.util.Log.e("Sync", "$errorFoto del pendiente ${pendiente.id}")
-                        return@forEach
-                    }
-                }
-                
-                // 2. Registrar en Firestore con reintentos controlados
-                val payloadFinal = data.toMutableMap()
-                payloadFinal.remove("fotoLocalUri")
-                payloadFinal.remove("itemBase")
-                payloadFinal.remove("cantidadNumerica")
-                if (cloudUrl.isNotBlank()) payloadFinal["fotoUrl"] = cloudUrl
-                
-                val latchFire = java.util.concurrent.CountDownLatch(1)
-                var exito = false
-                var errorMsg = ""
-                
-                val task = when (coleccion) {
-                    "herramientas" -> {
-                        firestore.collection(coleccion)
-                            .document(documentoHerramientaPendiente(payloadFinal))
-                            .set(payloadFinal, SetOptions.merge())
-                    }
-                    "existencias", "catalogo_personalizado" -> {
-                        val docId = documentoCatalogoPendiente(payloadFinal)
-                        if (docId.isNotBlank()) {
-                            firestore.collection(coleccion).document(docId).set(payloadFinal, SetOptions.merge())
-                        } else {
-                            firestore.collection(coleccion).add(payloadFinal)
+        try {
+            pendientes.forEach { pendiente ->
+                try {
+                    val type = object : TypeToken<Map<String, Any?>>() {}.type
+                    val data: MutableMap<String, Any?> = Gson().fromJson(pendiente.payloadJson, type)
+                    val coleccion = pendiente.coleccion.trim().ifBlank { "movimientos" }
+
+                    val fotoUrlActual = data["fotoUrl"]?.toString().orEmpty()
+                    val fotoLocal = data["fotoLocalUri"]?.toString().orEmpty()
+                        .ifBlank { fotoUrlActual.takeIf { esUriLocalEvidencia(it) }.orEmpty() }
+                    var cloudUrl = ""
+
+                    // 1. Si hay foto local, subirla primero
+                    if (fotoLocal.isNotBlank()) {
+                        val latch = java.util.concurrent.CountDownLatch(1)
+                        subirEvidenciaCloud(fotoLocal, data["modulo"]?.toString() ?: "varios") { url ->
+                            cloudUrl = url
+                            latch.countDown()
+                        }
+                        latch.await(60, java.util.concurrent.TimeUnit.SECONDS)
+                        if (cloudUrl.isBlank()) {
+                            val errorFoto = "Timeout o fallo subiendo evidencia local (60s)"
+                            db.actualizarPendienteSyncError(pendiente.id, errorFoto)
+                            android.util.Log.e("Sync", "$errorFoto del pendiente ${pendiente.id}")
+                            return@forEach
                         }
                     }
-                    else -> firestore.collection(coleccion).add(payloadFinal)
-                }
 
-                task
-                    .addOnSuccessListener { 
-                        exito = true
-                        latchFire.countDown()
+                    // 2. Registrar en Firestore con reintentos controlados
+                    val payloadFinal = data.toMutableMap()
+                    payloadFinal.remove("fotoLocalUri")
+                    payloadFinal.remove("itemBase")
+                    payloadFinal.remove("cantidadNumerica")
+                    if (cloudUrl.isNotBlank()) payloadFinal["fotoUrl"] = cloudUrl
+
+                    val latchFire = java.util.concurrent.CountDownLatch(1)
+                    var exito = false
+                    var errorMsg = ""
+
+                    val task = when (coleccion) {
+                        "herramientas" -> {
+                            firestore.collection(coleccion)
+                                .document(documentoHerramientaPendiente(payloadFinal))
+                                .set(payloadFinal, SetOptions.merge())
+                        }
+                        "existencias", "catalogo_personalizado" -> {
+                            val docId = documentoCatalogoPendiente(payloadFinal)
+                            if (docId.isNotBlank()) {
+                                firestore.collection(coleccion).document(docId).set(payloadFinal, SetOptions.merge())
+                            } else {
+                                firestore.collection(coleccion).add(payloadFinal)
+                            }
+                        }
+                        else -> firestore.collection(coleccion).add(payloadFinal)
                     }
-                    .addOnFailureListener { e -> 
-                        errorMsg = e.localizedMessage ?: "Error desconocido"
-                        latchFire.countDown() 
+
+                    task
+                        .addOnSuccessListener {
+                            exito = true
+                            latchFire.countDown()
+                        }
+                        .addOnFailureListener { e ->
+                            errorMsg = e.localizedMessage ?: "Error desconocido"
+                            latchFire.countDown()
+                        }
+
+                    latchFire.await(20, java.util.concurrent.TimeUnit.SECONDS)
+
+                    if (exito) {
+                        db.eliminarPendienteSync(pendiente.id)
+                        android.util.Log.d("Sync", "Sincronizado registro ${pendiente.id} en $coleccion")
+                    } else {
+                        db.actualizarPendienteSyncError(pendiente.id, errorMsg)
+                        android.util.Log.e("Sync", "Fallo al subir ${pendiente.id}: $errorMsg")
                     }
-                
-                latchFire.await(20, java.util.concurrent.TimeUnit.SECONDS)
-                
-                if (exito) {
-                    db.eliminarPendienteSync(pendiente.id)
-                    android.util.Log.d("Sync", "Sincronizado registro ${pendiente.id} en $coleccion")
-                } else {
-                    // Incrementar error en DB local para no reintentar infinitamente si es error de validación
-                    db.actualizarPendienteSyncError(pendiente.id, errorMsg)
-                    android.util.Log.e("Sync", "Fallo al subir ${pendiente.id}: $errorMsg")
+                } catch (e: Exception) {
+                    db.actualizarPendienteSyncError(pendiente.id, e.localizedMessage ?: "Error sincronizando pendiente")
+                    android.util.Log.e("Sync", "Error sincronizando ${pendiente.id}: ${e.message}")
                 }
-            } catch (e: Exception) {
-                db.actualizarPendienteSyncError(pendiente.id, e.localizedMessage ?: "Error sincronizando pendiente")
-                android.util.Log.e("Sync", "Error sincronizando ${pendiente.id}: ${e.message}")
             }
+        } finally {
+            isSyncing.set(false)
+            android.util.Log.d(
+                "PerfPrincipal",
+                "intentarSincronizarPendientes fin ${android.os.SystemClock.elapsedRealtime() - start}ms lote=${pendientes.size}"
+            )
         }
-        isSyncing.set(false)
         
-        // Si quedan más, reintentar después de un pequeño respiro
+        // Si quedan mÃ¡s, reintentar despuÃ©s de un pequeÃ±o respiro
         if (db.contarPendientesSync() > 0) {
             Thread.sleep(2000)
             runOnUiThread { intentarSincronizarPendientes() }

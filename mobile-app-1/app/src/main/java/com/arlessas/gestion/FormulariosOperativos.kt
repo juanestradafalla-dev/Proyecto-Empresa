@@ -300,7 +300,15 @@ internal fun MainActivity.showLubricantesTallerForm(pItem: String = "", pCant: S
         showQuimicoInventarioForm(ModulosInventario.LUBRICANTES_TALLER, pItem, pCant, pSol, pCat, pRef)
     }
 
-private fun MainActivity.showQuimicoInventarioForm(moduloOperativo: String, pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
+private fun MainActivity.showQuimicoInventarioForm(
+        moduloOperativo: String,
+        pItem: String = "",
+        pCant: String = "",
+        pSol: String = "",
+        pCat: String = "",
+        pRef: String = "",
+        catalogoRefrescado: Boolean = false,
+    ) {
         val usaAreasCop = ModulosInventario.esModuloLubricantesTaller(moduloOperativo)
         currentScreenRenderer = {
             if (usaAreasCop) showLubricantesTallerForm(pItem, pCant, pSol, pCat, pRef)
@@ -316,6 +324,16 @@ private fun MainActivity.showQuimicoInventarioForm(moduloOperativo: String, pIte
 
         fun getCatalogo() = catalogoCargado[moduloOperativo] ?: mapOf()
         fun esValido(valor: String) = valor.isNotBlank() && !valor.startsWith("Selecciona")
+
+        if (!catalogoRefrescado && getCatalogo().isEmpty()) {
+            root.addView(infoText("Sincronizando inventario..."))
+            sincronizarCatalogo {
+                if (pantallaActiva()) {
+                    showQuimicoInventarioForm(moduloOperativo, pItem, pCant, pSol, pCat, pRef, catalogoRefrescado = true)
+                }
+            }
+            return
+        }
 
         val catSpinner = spinner(root, "Categor\u00eda *", getCatalogo().keys.toList())
         val subcatSpinner = spinner(root, "Subcategor\u00eda / uso *", listOf("Selecciona categor\u00eda"))
@@ -1243,7 +1261,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         
         fun getCatalogo() = catalogoCargado["Consumibles"] ?: mapOf()
 
-        if (!catalogoRefrescado) {
+        if (!catalogoRefrescado && getCatalogo().isEmpty()) {
             root.addView(infoText("Sincronizando inventario de consumibles..."))
             sincronizarCatalogo {
                 if (!isFinishing && !isDestroyed) {
