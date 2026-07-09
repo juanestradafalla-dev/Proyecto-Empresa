@@ -86,6 +86,13 @@ class MainActivity : ComponentActivity() {
     internal var catalogoSyncRepetirAlFinalizar: Boolean = false
     internal var lastCatalogSyncAtMs: Long = 0L
     internal val catalogoSyncCallbacks: MutableList<() -> Unit> = mutableListOf()
+    internal var quimicosCanonicosSyncEnProceso: Boolean = false
+    internal var quimicosCanonicosVerificados: Boolean = false
+    internal var aseoCanonicoSyncEnProceso: Boolean = false
+    internal var aseoCanonicoVerificado: Boolean = false
+    internal var pendingSyncRetryScheduled: Boolean = false
+    internal var backupAutomaticoEnProceso: Boolean = false
+    internal var ultimoBackupAutomaticoCheckMs: Long = 0L
     internal var aiDialog: Dialog? = null
     internal var activeAIInput: EditText? = null
     internal var activeAIChatContainer: LinearLayout? = null

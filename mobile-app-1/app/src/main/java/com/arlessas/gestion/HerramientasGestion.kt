@@ -1751,6 +1751,7 @@ internal fun MainActivity.showHistorialMovimientosHerramientas(subModulo: String
             "Seguimiento temporal de salidas y entradas."
         }
         val root = baseScreen(titulo, subtituloHistorial, backAction = { if (subModulo.isBlank()) showHerramientasMenu() else showTallerSubmoduloMenu(subModulo) })
+        val historialScreenId = currentScreenId
 
         root.addView(
             moduleHeroBanner(
@@ -1783,13 +1784,18 @@ internal fun MainActivity.showHistorialMovimientosHerramientas(subModulo: String
             override fun afterTextChanged(p0: Editable?) {}
         })
 
+        val listenerKey = "taller_historial:${subModulo.ifBlank { "todos" }}"
+        val listenerStart = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("PerfPrincipal", "listener taller_historial crear subModulo=${subModulo.ifBlank { "todos" }} limite=${performanceConfig.movementQueryLimit()}")
         val herramientasListener = firestore.collection("movimientos")
             .whereIn("modulo", listOf(TallerCanonicos.MODULO, TallerCanonicos.MODULO_LEGACY))
             .limit(performanceConfig.movementQueryLimit())
             .addSnapshotListener { snapshot, e ->
-                if (!pantallaActiva()) return@addSnapshotListener
+                val callbackStart = android.os.SystemClock.elapsedRealtime()
+                if (!pantallaActiva() || currentScreenId != historialScreenId) return@addSnapshotListener
                 if (e != null) {
                     android.util.Log.e("ArlesGestion", "Error en movimientos taller: ${e.message}")
+                    android.util.Log.d("PerfPrincipal", "listener taller_historial subModulo=${subModulo.ifBlank { "todos" }} error=${e.localizedMessage ?: "desconocido"}")
                     listaActual = ordenarMovimientosTallerPorFecha(
                         db.obtenerMovimientos()
                             .filter { TallerCanonicos.esModuloTaller(it.modulo) }
@@ -1803,9 +1809,13 @@ internal fun MainActivity.showHistorialMovimientosHerramientas(subModulo: String
                         .filter { TallerCanonicos.esModuloTaller(it.modulo) }
                         .filter { movimientoPerteneceSubmoduloTaller(it, subModulo) },
                 )
+                android.util.Log.d(
+                    "PerfPrincipal",
+                    "listener taller_historial subModulo=${subModulo.ifBlank { "todos" }} docs=${snapshot?.size() ?: 0} filtrados=${listaActual.size} callback=${android.os.SystemClock.elapsedRealtime() - callbackStart}ms desde_creacion=${android.os.SystemClock.elapsedRealtime() - listenerStart}ms"
+                )
                 updateTableFromList(listaActual, filterInput.text.toString(), listContainer, resumenLabel)
             }
-        firestoreListeners.add(herramientasListener)
+        firestoreListeners.add(listenerKey, herramientasListener)
     }
 
 internal fun MainActivity.updateTableFromList(

@@ -864,13 +864,38 @@ internal fun MainActivity.codigoInternoValidadoParaSalida(codigoField: EditText,
 }
 
 internal fun MainActivity.sincronizarQuimicosCanonicosFirebase() {
+        val start = android.os.SystemClock.elapsedRealtime()
+        if (quimicosCanonicosVerificados) {
+            android.util.Log.d("PerfPrincipal", "sincronizarQuimicosCanonicosFirebase fin 0ms omitida=cache_version")
+            return
+        }
+        if (quimicosCanonicosSyncEnProceso) {
+            android.util.Log.d("PerfPrincipal", "sincronizarQuimicosCanonicosFirebase fin 0ms omitida=en_curso")
+            return
+        }
+        quimicosCanonicosSyncEnProceso = true
+        android.util.Log.d("PerfPrincipal", "sincronizarQuimicosCanonicosFirebase inicio")
+
+        fun finalizarQuimicosCanonicos(resultado: String, verificado: Boolean = false) {
+            quimicosCanonicosSyncEnProceso = false
+            if (verificado) quimicosCanonicosVerificados = true
+            android.util.Log.d(
+                "PerfPrincipal",
+                "sincronizarQuimicosCanonicosFirebase fin ${android.os.SystemClock.elapsedRealtime() - start}ms resultado=$resultado"
+            )
+        }
+
         val markerRef = firestore.collection("sistema").document(QuimicosCanonicos.VERSION)
         markerRef.get()
             .addOnSuccessListener { marker ->
-                if (marker.exists()) return@addOnSuccessListener
+                if (marker.exists()) {
+                    finalizarQuimicosCanonicos("marker_existente", verificado = true)
+                    return@addOnSuccessListener
+                }
 
                 firestore.collection("existencias").limit(2000).get()
                     .addOnSuccessListener { snapshot ->
+                        android.util.Log.d("PerfPrincipal", "sincronizarQuimicosCanonicosFirebase existencias docs=${snapshot.size()}")
                         val canonicos = QuimicosCanonicos.items
                         val canonIds = canonicos.map { it.documentoId }.toSet()
                         val operaciones = mutableListOf<(com.google.firebase.firestore.WriteBatch) -> Unit>()
@@ -939,6 +964,7 @@ internal fun MainActivity.sincronizarQuimicosCanonicosFirebase() {
                                 db.borrarMemoria("catalogo_completo")
                                 sincronizarCatalogo()
                                 android.util.Log.d("ArlesGesti\u00f3n", "Qu\u00edmicos can\u00f3nicos sincronizados: ${canonicos.size}")
+                                finalizarQuimicosCanonicos("migrado operaciones=${operaciones.size}", verificado = true)
                                 return
                             }
                             val batch = firestore.batch()
@@ -947,6 +973,7 @@ internal fun MainActivity.sincronizarQuimicosCanonicosFirebase() {
                                 .addOnSuccessListener { ejecutarChunk(indice + 240) }
                                 .addOnFailureListener { e ->
                                     android.util.Log.e("ArlesGesti\u00f3n", "Error migrando qu\u00edmicos: ${e.message}")
+                                    finalizarQuimicosCanonicos("error_batch=${e.localizedMessage ?: "desconocido"}")
                                 }
                         }
 
@@ -954,23 +981,51 @@ internal fun MainActivity.sincronizarQuimicosCanonicosFirebase() {
                     }
                     .addOnFailureListener { e ->
                         android.util.Log.e("ArlesGesti\u00f3n", "No se pudo revisar existencias para qu\u00edmicos: ${e.message}")
+                        finalizarQuimicosCanonicos("error_existencias=${e.localizedMessage ?: "desconocido"}")
                     }
             }
             .addOnFailureListener { e ->
                 android.util.Log.e("ArlesGesti\u00f3n", "No se pudo revisar marcador qu\u00edmicos: ${e.message}")
+                finalizarQuimicosCanonicos("error_marker=${e.localizedMessage ?: "desconocido"}")
             }
     }
 
 internal fun MainActivity.sincronizarAseoCanonicoFirebase() {
+        val start = android.os.SystemClock.elapsedRealtime()
+        if (aseoCanonicoVerificado) {
+            android.util.Log.d("PerfPrincipal", "sincronizarAseoCanonicoFirebase fin 0ms omitida=cache_version")
+            return
+        }
+        if (aseoCanonicoSyncEnProceso) {
+            android.util.Log.d("PerfPrincipal", "sincronizarAseoCanonicoFirebase fin 0ms omitida=en_curso")
+            return
+        }
+        aseoCanonicoSyncEnProceso = true
+        android.util.Log.d("PerfPrincipal", "sincronizarAseoCanonicoFirebase inicio")
+
+        fun finalizarAseoCanonico(resultado: String, verificado: Boolean = false) {
+            aseoCanonicoSyncEnProceso = false
+            if (verificado) aseoCanonicoVerificado = true
+            android.util.Log.d(
+                "PerfPrincipal",
+                "sincronizarAseoCanonicoFirebase fin ${android.os.SystemClock.elapsedRealtime() - start}ms resultado=$resultado"
+            )
+        }
+
         val markerRef = firestore.collection("sistema").document(AseoCanonicos.VERSION)
         markerRef.get()
             .addOnSuccessListener { marker ->
-                if (marker.exists()) return@addOnSuccessListener
+                if (marker.exists()) {
+                    finalizarAseoCanonico("marker_existente", verificado = true)
+                    return@addOnSuccessListener
+                }
 
                 firestore.collection("existencias").limit(2000).get()
                     .addOnSuccessListener { existenciasSnapshot ->
+                        android.util.Log.d("PerfPrincipal", "sincronizarAseoCanonicoFirebase existencias docs=${existenciasSnapshot.size()}")
                         firestore.collection(AseoCanonicos.COLECCION).get()
                             .addOnSuccessListener { aseoSnapshot ->
+                                android.util.Log.d("PerfPrincipal", "sincronizarAseoCanonicoFirebase aseo docs=${aseoSnapshot.size()}")
                                 val canonicos = AseoCanonicos.items
                                 val canonIds = canonicos.map { it.codigoInterno }.toSet()
                                 val stockExistente = mutableMapOf<String, Double>()
@@ -1051,6 +1106,7 @@ internal fun MainActivity.sincronizarAseoCanonicoFirebase() {
                                         db.borrarMemoria("catalogo_completo")
                                         sincronizarCatalogo()
                                         android.util.Log.d("ArlesGestion", "ASEO canonico sincronizado: ${canonicos.size}")
+                                        finalizarAseoCanonico("migrado operaciones=${operaciones.size}", verificado = true)
                                         return
                                     }
                                     val batch = firestore.batch()
@@ -1059,6 +1115,7 @@ internal fun MainActivity.sincronizarAseoCanonicoFirebase() {
                                         .addOnSuccessListener { ejecutarChunk(indice + 240) }
                                         .addOnFailureListener { e ->
                                             android.util.Log.e("ArlesGestion", "Error migrando ASEO: ${e.message}")
+                                            finalizarAseoCanonico("error_batch=${e.localizedMessage ?: "desconocido"}")
                                         }
                                 }
 
@@ -1066,14 +1123,17 @@ internal fun MainActivity.sincronizarAseoCanonicoFirebase() {
                             }
                             .addOnFailureListener { e ->
                                 android.util.Log.e("ArlesGestion", "No se pudo revisar productos ASEO: ${e.message}")
+                                finalizarAseoCanonico("error_aseo=${e.localizedMessage ?: "desconocido"}")
                             }
                     }
                     .addOnFailureListener { e ->
                         android.util.Log.e("ArlesGestion", "No se pudo revisar existencias para ASEO: ${e.message}")
+                        finalizarAseoCanonico("error_existencias=${e.localizedMessage ?: "desconocido"}")
                     }
             }
             .addOnFailureListener { e ->
                 android.util.Log.e("ArlesGestion", "No se pudo revisar marcador ASEO: ${e.message}")
+                finalizarAseoCanonico("error_marker=${e.localizedMessage ?: "desconocido"}")
             }
     }
 
@@ -2771,14 +2831,19 @@ private fun MainActivity.showInventarioScreenInterno() {
             resumenLabel.text = "Sincronizando $moduloSeleccionado..."
 
             val limite = performanceConfig.inventoryQueryLimit()
-            val registration = if (moduloSeleccionado.equals(AseoCanonicos.MODULO, ignoreCase = true)) {
+            val listenerModulo = moduloSeleccionado
+            val listenerKey = "inventario:$listenerModulo"
+            val listenerStart = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d("PerfPrincipal", "listener inventario crear modulo=$listenerModulo limite=$limite")
+            val registration = if (listenerModulo.equals(AseoCanonicos.MODULO, ignoreCase = true)) {
                 cacheAseoDocs = emptyList()
                 pintarInventarioAseoActualizado(emptyList())
                 firestore.collection(AseoCanonicos.COLECCION)
                     .limit(limite)
                     .addSnapshotListener { snapshot, e ->
+                        val callbackStart = android.os.SystemClock.elapsedRealtime()
                         ejecutarEnUi {
-                            if (!pantallaActiva()) return@ejecutarEnUi
+                            if (!pantallaActiva() || listenerModulo != moduloSeleccionado) return@ejecutarEnUi
                             try {
                                 if (e != null) {
                                     android.util.Log.e("ArlesGestion", "Error leyendo productos_aseo: ${e.message}")
@@ -2788,6 +2853,10 @@ private fun MainActivity.showInventarioScreenInterno() {
                                 }
                                 cacheAseoDocs = snapshot?.documents ?: emptyList()
                                 pintarInventarioAseoActualizado(cacheAseoDocs)
+                                android.util.Log.d(
+                                    "PerfPrincipal",
+                                    "listener inventario modulo=$listenerModulo docs=${cacheAseoDocs.size} callback=${android.os.SystemClock.elapsedRealtime() - callbackStart}ms desde_creacion=${android.os.SystemClock.elapsedRealtime() - listenerStart}ms"
+                                )
                             } catch (listenerError: Exception) {
                                 android.util.Log.e("ArlesGestion", "Error en listener ASEO", listenerError)
                                 Toast.makeText(
@@ -2801,25 +2870,31 @@ private fun MainActivity.showInventarioScreenInterno() {
                     }
             } else {
                 firestore.collection("existencias")
-                    .whereEqualTo("modulo", moduloSeleccionado)
+                    .whereEqualTo("modulo", listenerModulo)
                     .limit(limite)
                     .addSnapshotListener { snapshot, e ->
+                        val callbackStart = android.os.SystemClock.elapsedRealtime()
                         ejecutarEnUi {
-                            if (!pantallaActiva()) return@ejecutarEnUi
+                            if (!pantallaActiva() || listenerModulo != moduloSeleccionado) return@ejecutarEnUi
                             if (e != null) {
                                 limpiarLista()
+                                android.util.Log.d("PerfPrincipal", "listener inventario modulo=$listenerModulo error=${e.localizedMessage ?: "desconocido"}")
                                 resumenLabel.text = "Error de conexion."
-                                mostrarInventarioVacio("No se pudo leer existencias de $moduloSeleccionado.")
+                                mostrarInventarioVacio("No se pudo leer existencias de $listenerModulo.")
                                 return@ejecutarEnUi
                             }
                             cacheExistenciasDocs = snapshot?.documents ?: emptyList()
                             pintarInventarioExistenciasActualizado(cacheExistenciasDocs)
+                            android.util.Log.d(
+                                "PerfPrincipal",
+                                "listener inventario modulo=$listenerModulo docs=${cacheExistenciasDocs.size} callback=${android.os.SystemClock.elapsedRealtime() - callbackStart}ms desde_creacion=${android.os.SystemClock.elapsedRealtime() - listenerStart}ms"
+                            )
                         }
                     }
             }
 
             currentListener = registration
-            firestoreListeners.add(registration)
+            firestoreListeners.add(listenerKey, registration)
         }
 
         modulos.forEach { mod ->
@@ -3141,6 +3216,9 @@ internal fun MainActivity.showTablaMovimientos() {
         }
 
         var currentListener: com.google.firebase.firestore.ListenerRegistration? = null
+        val movimientosScreenId = currentScreenId
+        val movimientosSearchHandler = Handler(Looper.getMainLooper())
+        var movimientosSearchRunnable: Runnable? = null
 
         fun mostrarDetalleMovimiento(doc: com.google.firebase.firestore.DocumentSnapshot) {
             val tipo = doc.getString("tipoMovimiento") ?: doc.getString("tipo") ?: "Salida"
@@ -3174,33 +3252,47 @@ internal fun MainActivity.showTablaMovimientos() {
         }
 
         fun updateTableRealTime() {
+            if (currentScreenId != movimientosScreenId) {
+                android.util.Log.d("PerfPrincipal", "listener movimientos omitido=pantalla_inactiva")
+                return
+            }
             firestoreListeners.remove(currentListener)
-            currentListener?.remove()
+            currentListener = null
             limpiarLista()
             resumenLabel.text = "Sincronizando $moduloSeleccionado..."
 
             val queryText = normalizarBusqueda(search.text.toString())
+            val listenerModulo = moduloSeleccionado
+            val listenerKey = "movimientos:$listenerModulo"
+            val listenerStart = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d("PerfPrincipal", "listener movimientos crear modulo=$listenerModulo limite=${performanceConfig.movementQueryLimit()} filtro=${queryText.isNotBlank()}")
             val queryBase = firestore.collection("movimientos")
-            val registration = if (TallerCanonicos.esModuloTaller(moduloSeleccionado)) {
+            val registration = if (TallerCanonicos.esModuloTaller(listenerModulo)) {
                 queryBase
                     .whereIn("modulo", listOf(TallerCanonicos.MODULO, TallerCanonicos.MODULO_LEGACY))
                     .limit(performanceConfig.movementQueryLimit())
             } else {
                 queryBase
-                    .whereEqualTo("modulo", moduloSeleccionado)
+                    .whereEqualTo("modulo", listenerModulo)
                     .limit(performanceConfig.movementQueryLimit())
             }.addSnapshotListener { snapshot, e ->
-                    if (!pantallaActiva()) return@addSnapshotListener
+                    val callbackStart = android.os.SystemClock.elapsedRealtime()
+                    if (!pantallaActiva() || listenerModulo != moduloSeleccionado) return@addSnapshotListener
                     limpiarLista()
 
                     if (e != null) {
                         android.util.Log.e("ArlesGestión", "Error en movimientos real-time: ${e.message}")
-                        resumenLabel.text = "Error de conexión en $moduloSeleccionado"
-                        listaContainer.addView(tallerEmptyState("Sin conexión", "No se pudo leer movimientos de $moduloSeleccionado."))
+                        android.util.Log.d("PerfPrincipal", "listener movimientos modulo=$listenerModulo error=${e.localizedMessage ?: "desconocido"}")
+                        resumenLabel.text = "Error de conexión en $listenerModulo"
+                        listaContainer.addView(tallerEmptyState("Sin conexión", "No se pudo leer movimientos de $listenerModulo."))
                         return@addSnapshotListener
                     }
 
                     val rawDocs = snapshot?.documents ?: emptyList()
+                    android.util.Log.d(
+                        "PerfPrincipal",
+                        "listener movimientos modulo=$listenerModulo docs=${rawDocs.size} callback=${android.os.SystemClock.elapsedRealtime() - callbackStart}ms desde_creacion=${android.os.SystemClock.elapsedRealtime() - listenerStart}ms"
+                    )
                     val docs = rawDocs
                         .sortedByDescending { it.getString("fecha") ?: "" }
                         .filter { doc ->
@@ -3269,7 +3361,7 @@ internal fun MainActivity.showTablaMovimientos() {
                 }
 
             currentListener = registration
-            firestoreListeners.add(registration)
+            firestoreListeners.add(listenerKey, registration)
         }
 
         modulos.forEach { mod ->
@@ -3284,7 +3376,15 @@ internal fun MainActivity.showTablaMovimientos() {
 
         search.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updateTableRealTime() }
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                movimientosSearchRunnable?.let { movimientosSearchHandler.removeCallbacks(it) }
+                movimientosSearchRunnable = Runnable {
+                    if (currentScreenId != movimientosScreenId) return@Runnable
+                    android.util.Log.d("PerfPrincipal", "listener movimientos filtro debounce modulo=$moduloSeleccionado")
+                    updateTableRealTime()
+                }
+                movimientosSearchHandler.postDelayed(movimientosSearchRunnable!!, 450L)
+            }
             override fun afterTextChanged(s: Editable?) {}
         })
 
