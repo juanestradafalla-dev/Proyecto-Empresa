@@ -19,7 +19,10 @@ class FirestoreListenerRegistry {
         activeListeners.remove(registration)
     }
 
+    fun count(): Int = activeListeners.size
+
     fun clear() {
+        if (activeListeners.isEmpty()) return
         activeListeners.forEach { runCatching { it.remove() } }
         activeListeners.clear()
     }

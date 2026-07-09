@@ -1036,15 +1036,53 @@ internal fun MainActivity.ejecutarReorganizacionInventario() {
     }
 }
 
-internal fun MainActivity.handleBackPress() {
-    if (aiDialog?.isShowing == true) {
-        aiDialog?.dismiss()
+private const val BACK_NAV_DEBOUNCE_MS = 700L
+
+internal fun MainActivity.safeShowScreen(screenId: String, force: Boolean = false, render: () -> Unit) {
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (!force && currentScreenId == screenId && now - lastScreenRenderedAtMs < 450L) {
+        android.util.Log.d("PerfTaller", "safeShowScreen omitido: $screenId ya activo")
         return
     }
-    val action = currentScreenBackAction
-    if (action != null) {
-        action()
-    } else {
-        finish()
+    render()
+}
+
+internal fun MainActivity.safeNavigateBack() {
+    val startMs = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfTaller", "handleBackPress inicio screen=$currentScreenId")
+
+    if (aiDialog?.isShowing == true) {
+        aiDialog?.dismiss()
+        android.util.Log.d("PerfTaller", "handleBackPress fin dialog ${android.os.SystemClock.elapsedRealtime() - startMs}ms")
+        return
     }
+
+    if (isBackNavigationInProgress || startMs - lastBackPressAtMs < BACK_NAV_DEBOUNCE_MS) {
+        android.util.Log.d("PerfTaller", "handleBackPress ignorado debounce screen=$currentScreenId")
+        return
+    }
+
+    isBackNavigationInProgress = true
+    lastBackPressAtMs = startMs
+
+    try {
+        val action = currentScreenBackAction
+        if (action != null) {
+            action()
+        } else {
+            finish()
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("PerfTaller", "handleBackPress fallo", e)
+        Toast.makeText(this, "No se pudo volver: ${e.localizedMessage ?: "error inesperado"}", Toast.LENGTH_SHORT).show()
+    } finally {
+        android.util.Log.d("PerfTaller", "handleBackPress fin ${android.os.SystemClock.elapsedRealtime() - startMs}ms")
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            isBackNavigationInProgress = false
+        }, BACK_NAV_DEBOUNCE_MS)
+    }
+}
+
+internal fun MainActivity.handleBackPress() {
+    safeNavigateBack()
 }

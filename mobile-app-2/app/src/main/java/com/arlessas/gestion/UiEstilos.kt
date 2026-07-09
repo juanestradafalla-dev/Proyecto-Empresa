@@ -55,7 +55,9 @@ import com.google.gson.reflect.TypeToken
 // Archivo modularizado con funciones de extensión de MainActivity.
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
-internal fun MainActivity.prepararPantalla() {
+internal fun MainActivity.prepararPantalla(screenId: String = currentScreenId) {
+        val listeners = firestoreListeners.count()
+        android.util.Log.d("PerfTaller", "prepararPantalla: $screenId listeners=$listeners")
         firestoreListeners.clear()
     }
 
@@ -85,7 +87,11 @@ internal fun MainActivity.showMainMenu() {
             return
         }
 
-        sincronizarPerfilUsuarioNube()
+        if (isBackNavigationInProgress) {
+            android.util.Log.d("PerfTaller", "showMainMenu sin sincronizarPerfilUsuarioNube por retroceso")
+        } else {
+            sincronizarPerfilUsuarioNube()
+        }
 
         if (AppMode.esTallerIndependiente) {
             showHerramientasMenu()
@@ -991,8 +997,25 @@ internal fun MainActivity.actualizarSpinnerTalla(spinner: Spinner, refs: List<St
         }
     }
 
-internal fun MainActivity.baseScreen(title: String, subtitle: String, showBack: Boolean = true, backAction: () -> Unit = { showMainMenu() }): LinearLayout {
-        prepararPantalla()
+internal fun MainActivity.baseScreen(
+        title: String,
+        subtitle: String,
+        showBack: Boolean = true,
+        screenId: String = title,
+        backAction: () -> Unit = { showMainMenu() },
+    ): LinearLayout {
+        val startMs = android.os.SystemClock.elapsedRealtime()
+        val destino = screenId.ifBlank { title }
+        val mismoDestino = currentScreenId == destino
+        if (mismoDestino && startMs - lastScreenRenderedAtMs < 450L) {
+            android.util.Log.d("PerfTaller", "baseScreen: $destino render repetido rapido")
+        } else {
+            android.util.Log.d("PerfTaller", "baseScreen: $destino")
+        }
+        prepararPantalla(destino)
+        lastScreenId = currentScreenId
+        currentScreenId = destino
+        lastScreenRenderedAtMs = startMs
         currentScreenBackAction = if (showBack) backAction else null
         onSmartScanResult = null // Limpiar el callback al cambiar de pantalla
         
@@ -1029,7 +1052,7 @@ internal fun MainActivity.baseScreen(title: String, subtitle: String, showBack: 
                 setTextColor(verdeOscuro)
                 setBackgroundColor(Color.TRANSPARENT)
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                setAnimatedClick(this) { backAction() }
+                setAnimatedClick(this) { safeNavigateBack() }
             }
             root.addView(back, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
         }
@@ -1053,6 +1076,7 @@ internal fun MainActivity.baseScreen(title: String, subtitle: String, showBack: 
         root.addView(subtitleView)
 
         setContentView(frame)
+        android.util.Log.d("PerfTaller", "baseScreen fin: $destino ${android.os.SystemClock.elapsedRealtime() - startMs}ms")
         return root
     }
 
