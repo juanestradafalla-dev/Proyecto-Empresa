@@ -108,6 +108,7 @@ internal fun MainActivity.intentarSincronizarPendientes() {
         android.util.Log.d("PerfPrincipal", "intentarSincronizarPendientes fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitida=en_curso")
         return
     }
+    pendingSyncRetryScheduled = false
     
     val pendientes = db.obtenerPendientesSync(10) // Procesar de 10 en 10
     if (pendientes.isEmpty()) {
@@ -207,8 +208,18 @@ internal fun MainActivity.intentarSincronizarPendientes() {
         
         // Si quedan mÃ¡s, reintentar despuÃ©s de un pequeÃ±o respiro
         if (db.contarPendientesSync() > 0) {
-            Thread.sleep(2000)
-            runOnUiThread { intentarSincronizarPendientes() }
+            runOnUiThread {
+                if (pendingSyncRetryScheduled) {
+                    android.util.Log.d("PerfPrincipal", "intentarSincronizarPendientes reintento omitido=ya_programado")
+                    return@runOnUiThread
+                }
+                pendingSyncRetryScheduled = true
+                android.util.Log.d("PerfPrincipal", "intentarSincronizarPendientes reintento programado 15000ms")
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    pendingSyncRetryScheduled = false
+                    if (pantallaActiva()) intentarSincronizarPendientes()
+                }, 15_000L)
+            }
         }
     }.start()
 }

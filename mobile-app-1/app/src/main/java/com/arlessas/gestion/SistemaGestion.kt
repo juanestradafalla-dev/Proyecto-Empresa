@@ -414,14 +414,25 @@ internal fun MainActivity.ejecutarBackupManual() {
 internal fun MainActivity.ejecutarBackupAutomaticoSiCorresponde() {
     val start = android.os.SystemClock.elapsedRealtime()
     android.util.Log.d("PerfPrincipal", "backup automático inicio")
+    if (backupAutomaticoEnProceso) {
+        android.util.Log.d("PerfPrincipal", "backup automático fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitido=en_curso")
+        return
+    }
+    if (start - ultimoBackupAutomaticoCheckMs < 10 * 60_000L) {
+        android.util.Log.d("PerfPrincipal", "backup automático fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitido=cache_check")
+        return
+    }
+    ultimoBackupAutomaticoCheckMs = start
     val prefs = getSharedPreferences("gestion_config", Context.MODE_PRIVATE)
     val hoy = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
     val ultimo = prefs.getString("ultimo_backup_fecha", "")
     if (ultimo != hoy) {
+        backupAutomaticoEnProceso = true
         Thread {
             try {
                 ejecutarBackupManual()
             } finally {
+                backupAutomaticoEnProceso = false
                 android.util.Log.d(
                     "PerfPrincipal",
                     "backup automático fin ${android.os.SystemClock.elapsedRealtime() - start}ms ejecutado=true"
