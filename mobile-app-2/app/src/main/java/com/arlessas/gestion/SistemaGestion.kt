@@ -56,7 +56,7 @@ internal fun MainActivity.showRegistrosMenu() {
     root.addView(primaryButton("Detector de inconsistencias") { showInconsistenciasScreen() } )
     root.addView(primaryButton("Vencimientos y alertas") { showVencimientosScreen() } )
     root.addView(primaryButton("Importar inventario Excel/CSV") { abrirImportadorInventario() } )
-    root.addView(primaryButton("Sincronizar pendientes offline") { intentarSincronizarPendientes() } )
+    root.addView(primaryButton("Sincronizar pendientes offline") { intentarSincronizarPendientes(force = true) } )
     root.addView(primaryButton("Backup manual en nube") { ejecutarBackupManual() } )
     root.addView(primaryButton("Ver herramientas registradas") { showHerramientasRegistradas() } )
     root.addView(primaryButton("Exportar CSV para Excel / Drive") { exportarCsv() } )
@@ -84,7 +84,7 @@ internal fun MainActivity.showPanelAuditoria() {
 
     root.addView(primaryButton("Hacer backup ahora") { ejecutarBackupManual() })
     root.addView(primaryButton("Reorganizar y unificar códigos") { confirmarReorganizacionInventario() })
-    root.addView(primaryButton("Sincronizar pendientes") { intentarSincronizarPendientes() })
+    root.addView(primaryButton("Sincronizar pendientes") { intentarSincronizarPendientes(force = true) })
     root.addView(primaryButton("Ver inconsistencias") { showInconsistenciasScreen() })
     root.addView(primaryButton("Importar inventario Excel/CSV") { abrirImportadorInventario() })
     root.addView(primaryButton("Ver historial de cambios") { showHistorialCambios() })

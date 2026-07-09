@@ -10,13 +10,18 @@ import com.google.gson.reflect.TypeToken
 import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Gestión de sincronización offline.
  * Permite encolar registros cuando no hay internet y subirlos automáticamente después.
  */
 
+private const val SYNC_MIN_INTERVAL_MS = 30_000L
+private const val SYNC_RETRY_DELAY_MS = 30_000L
+
 private val isSyncing = AtomicBoolean(false)
+private val lastSyncAttemptAtMs = AtomicLong(0L)
 
 private fun esUriLocalEvidencia(valor: String): Boolean {
     return valor.startsWith("content:", ignoreCase = true) || valor.startsWith("file:", ignoreCase = true)
@@ -97,13 +102,31 @@ internal fun MainActivity.encolarMovimientoOffline(
     Toast.makeText(this, "Sin conexión. Registro guardado localmente.", Toast.LENGTH_LONG).show()
 }
 
-internal fun MainActivity.intentarSincronizarPendientes() {
-    if (!isNetworkAvailable() || isSyncing.get()) return
+internal fun MainActivity.intentarSincronizarPendientes(force: Boolean = false) {
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (!isNetworkAvailable()) {
+        android.util.Log.d("PerfTaller", "sync pendientes omitido: sin red")
+        return
+    }
+    if (isSyncing.get()) {
+        android.util.Log.d("PerfTaller", "sync pendientes omitido: ya en progreso")
+        return
+    }
+    if (!force && now - lastSyncAttemptAtMs.get() < SYNC_MIN_INTERVAL_MS) {
+        android.util.Log.d("PerfTaller", "sync pendientes omitido: cooldown ${now - lastSyncAttemptAtMs.get()}ms")
+        return
+    }
     
     val pendientes = db.obtenerPendientesSync(10) // Procesar de 10 en 10
-    if (pendientes.isEmpty()) return
+    if (pendientes.isEmpty()) {
+        android.util.Log.d("PerfTaller", "sync pendientes omitido: sin pendientes")
+        return
+    }
     
+    lastSyncAttemptAtMs.set(now)
     isSyncing.set(true)
+    val syncStartMs = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfTaller", "sync pendientes inicio count=${pendientes.size} force=$force")
     
     Thread {
         pendientes.forEach { pendiente ->
@@ -187,10 +210,12 @@ internal fun MainActivity.intentarSincronizarPendientes() {
             }
         }
         isSyncing.set(false)
+        val restantes = db.contarPendientesSync()
+        android.util.Log.d("PerfTaller", "sync pendientes fin restantes=$restantes ${android.os.SystemClock.elapsedRealtime() - syncStartMs}ms")
         
         // Si quedan más, reintentar después de un pequeño respiro
-        if (db.contarPendientesSync() > 0) {
-            Thread.sleep(2000)
+        if (restantes > 0) {
+            Thread.sleep(SYNC_RETRY_DELAY_MS)
             runOnUiThread { intentarSincronizarPendientes() }
         }
     }.start()

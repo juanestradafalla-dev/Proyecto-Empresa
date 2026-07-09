@@ -54,7 +54,19 @@ import com.google.gson.reflect.TypeToken
 // Archivo modularizado con funciones de extensión de MainActivity.
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
-private const val TALLER_INVENTORY_CACHE_MS = 60_000L
+private const val TALLER_INVENTORY_CACHE_MS = 120_000L
+private const val TALLER_MOVEMENTS_CACHE_MS = 45_000L
+
+internal fun MainActivity.marcarCacheTallerTrasCambio(reason: String, inventarioLocalActualizado: Boolean = true) {
+    val now = android.os.SystemClock.elapsedRealtime()
+    tallerMovimientosPrestamoCache = emptyList()
+    tallerMovimientosPrestamoCacheAtMs = 0L
+    tallerInventoryLastPreparedAtMs = if (inventarioLocalActualizado) now else 0L
+    android.util.Log.d(
+        "PerfTaller",
+        "cache taller invalidado reason=$reason inventarioLocal=$inventarioLocalActualizado",
+    )
+}
 
 internal fun claveHerramientaCloud(herramienta: Herramienta): String {
         val base = herramienta.codigo.ifBlank {
@@ -417,6 +429,7 @@ internal fun MainActivity.persistirTrasladoInventario(resultado: ResultadoTrasla
         db.actualizarHerramientaCanonica(resultado.destino)
         db.actualizarOcupacionHerramienta(resultado.destino.id, 0.0, "")
         sincronizarHerramientaCloudCompleta(resultado.destino)
+        marcarCacheTallerTrasCambio("traslado_completo")
         return
     }
 
@@ -436,6 +449,7 @@ internal fun MainActivity.persistirTrasladoInventario(resultado: ResultadoTrasla
         val nuevoId = db.insertarHerramienta(resultado.destino)
         sincronizarHerramientaCloudCompleta(resultado.destino.copy(id = nuevoId))
     }
+    marcarCacheTallerTrasCambio("traslado_inventario")
 }
 
 internal fun MainActivity.sincronizarHerramientaCloudCompleta(herramienta: Herramienta) {
@@ -489,7 +503,28 @@ internal fun MainActivity.movimientosLocalesTaller(): List<Movimiento> {
 
 internal fun MainActivity.cargarMovimientosPrestamosTaller(onReady: (List<Movimiento>) -> Unit) {
     fun usarLocales() {
+        android.util.Log.d("PerfTaller", "consulta prestamos_taller local")
         onReady(movimientosLocalesTaller())
+    }
+
+    fun entregarPendientes(movimientos: List<Movimiento>) {
+        tallerMovimientosPrestamoLoading = false
+        val callbacks = tallerMovimientosPrestamoPendingCallbacks.toList()
+        tallerMovimientosPrestamoPendingCallbacks.clear()
+        android.util.Log.d("PerfTaller", "consulta prestamos_taller callbacks=${callbacks.size}")
+        callbacks.forEach { it(movimientos) }
+    }
+
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (tallerMovimientosPrestamoCache.isNotEmpty() &&
+        now - tallerMovimientosPrestamoCacheAtMs < TALLER_MOVEMENTS_CACHE_MS
+    ) {
+        android.util.Log.d(
+            "PerfTaller",
+            "consulta prestamos_taller cache docs=${tallerMovimientosPrestamoCache.size} edad=${now - tallerMovimientosPrestamoCacheAtMs}ms",
+        )
+        onReady(tallerMovimientosPrestamoCache)
+        return
     }
 
     if (!isNetworkAvailable()) {
@@ -497,6 +532,20 @@ internal fun MainActivity.cargarMovimientosPrestamosTaller(onReady: (List<Movimi
         return
     }
 
+    if (tallerMovimientosPrestamoLoading) {
+        tallerMovimientosPrestamoPendingCallbacks.add(onReady)
+        android.util.Log.d(
+            "PerfTaller",
+            "consulta prestamos_taller en_progreso callbacks=${tallerMovimientosPrestamoPendingCallbacks.size}",
+        )
+        return
+    }
+
+    tallerMovimientosPrestamoLoading = true
+    tallerMovimientosPrestamoPendingCallbacks.add(onReady)
+
+    val startMs = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfTaller", "consulta prestamos_taller inicio limit=${performanceConfig.movementQueryLimit()}")
     firestore.collection("movimientos")
         .whereIn("modulo", listOf(TallerCanonicos.MODULO, TallerCanonicos.MODULO_LEGACY))
         .limit(performanceConfig.movementQueryLimit())
@@ -507,10 +556,17 @@ internal fun MainActivity.cargarMovimientosPrestamosTaller(onReady: (List<Movimi
                     .map(::movimientoDesdeDocTaller)
                     .filter { TallerCanonicos.esModuloTaller(it.modulo) },
             )
-            if (movimientosNube.isEmpty()) usarLocales() else onReady(movimientosNube)
+            tallerMovimientosPrestamoCache = movimientosNube
+            tallerMovimientosPrestamoCacheAtMs = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d(
+                "PerfTaller",
+                "consulta prestamos_taller fin docs=${snapshot.size()} utiles=${movimientosNube.size} ${tallerMovimientosPrestamoCacheAtMs - startMs}ms",
+            )
+            entregarPendientes(if (movimientosNube.isEmpty()) movimientosLocalesTaller() else movimientosNube)
         }
         .addOnFailureListener {
-            usarLocales()
+            android.util.Log.d("PerfTaller", "consulta prestamos_taller fallo ${android.os.SystemClock.elapsedRealtime() - startMs}ms")
+            entregarPendientes(movimientosLocalesTaller())
         }
 }
 
@@ -996,6 +1052,7 @@ internal fun MainActivity.registrarMovimientoIngresoBodegaNuevo(
             observaciones = observaciones,
         )
         val idMov = db.insertarMovimiento(mov)
+        marcarCacheTallerTrasCambio("ingreso_bodega_movimiento")
         val dataMov = mapOf(
             "id_local" to idMov,
             "fecha" to mov.fecha,
@@ -1141,6 +1198,7 @@ internal fun MainActivity.registrarMovimientoHerramienta(
 
             // 2. Actualizar estado de la herramienta
             db.actualizarOcupacionHerramienta(herramienta.id, nuevaOcupacion, responsable)
+            marcarCacheTallerTrasCambio("movimiento_${tipo.lowercase(Locale.getDefault())}")
 
             // 3. Si es un implemento asignado a un vehículo, guardar la asociación
             if (vehiculoAsignado.isNotBlank()) {
@@ -1734,6 +1792,7 @@ internal fun MainActivity.confirmarLimpiezaPruebasHerramientas() {
             .setPositiveButton("Eliminar todo") { _, _ ->
                 // 1. Eliminar en SQLite
                 val eliminados = db.eliminarMovimientosHerramientas()
+                marcarCacheTallerTrasCambio("limpiar_movimientos_herramientas")
                 
                 // 2. Eliminar en Firestore
                 firestore.collection("movimientos")
@@ -1768,7 +1827,10 @@ internal fun MainActivity.forzarSincronizacionHerramientas() {
         loading.show()
 
         var exito = 0
+        var errores = 0
         val total = herramientasLocales.size
+        val startMs = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("PerfTaller", "sync manual herramientas inicio docs=$total")
         
         val uid = auth.currentUser?.uid ?: ""
         obtenerInfoUsuario(uid) { info ->
@@ -1780,13 +1842,24 @@ internal fun MainActivity.forzarSincronizacionHerramientas() {
                     .addOnSuccessListener {
                         exito++
                         if (exito >= total) {
+                            marcarCacheTallerTrasCambio("sync_manual_herramientas")
+                            android.util.Log.d(
+                                "PerfTaller",
+                                "sync manual herramientas fin docs=$total errores=$errores ${android.os.SystemClock.elapsedRealtime() - startMs}ms",
+                            )
                             loading.cancel()
                             Toast.makeText(activity, "Sincronización completa", Toast.LENGTH_SHORT).show()
                         }
                     }
                     .addOnFailureListener {
+                        errores++
                         exito++
                         if (exito >= total) {
+                            marcarCacheTallerTrasCambio("sync_manual_herramientas")
+                            android.util.Log.d(
+                                "PerfTaller",
+                                "sync manual herramientas fin docs=$total errores=$errores ${android.os.SystemClock.elapsedRealtime() - startMs}ms",
+                            )
                             loading.cancel()
                             Toast.makeText(activity, "Sincronización finalizada con errores parciales", Toast.LENGTH_SHORT).show()
                         }
@@ -1836,13 +1909,18 @@ internal fun MainActivity.showHistorialMovimientosHerramientas(subModulo: String
             override fun afterTextChanged(p0: Editable?) {}
         })
 
+        val listenerKey = "historial_taller:${subModulo.ifBlank { "todos" }}"
+        val listenerStartMs = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("PerfTaller", "listener preparar: $listenerKey limit=${performanceConfig.movementQueryLimit()}")
         val herramientasListener = firestore.collection("movimientos")
             .whereIn("modulo", listOf(TallerCanonicos.MODULO, TallerCanonicos.MODULO_LEGACY))
             .limit(performanceConfig.movementQueryLimit())
             .addSnapshotListener { snapshot, e ->
+                val eventStartMs = android.os.SystemClock.elapsedRealtime()
                 if (!pantallaActiva()) return@addSnapshotListener
                 if (e != null) {
                     android.util.Log.e("ArlesGestion", "Error en movimientos taller: ${e.message}")
+                    android.util.Log.d("PerfTaller", "listener datos: $listenerKey error ${eventStartMs - listenerStartMs}ms")
                     listaActual = ordenarMovimientosTallerPorFecha(
                         db.obtenerMovimientos()
                             .filter { TallerCanonicos.esModuloTaller(it.modulo) }
@@ -1856,9 +1934,18 @@ internal fun MainActivity.showHistorialMovimientosHerramientas(subModulo: String
                         .filter { TallerCanonicos.esModuloTaller(it.modulo) }
                         .filter { movimientoPerteneceSubmoduloTaller(it, subModulo) },
                 )
+                tallerMovimientosPrestamoCache = ordenarMovimientosTallerPorFecha(
+                    (snapshot?.documents ?: emptyList()).map(::movimientoDesdeDocTaller)
+                        .filter { TallerCanonicos.esModuloTaller(it.modulo) },
+                )
+                tallerMovimientosPrestamoCacheAtMs = android.os.SystemClock.elapsedRealtime()
+                android.util.Log.d(
+                    "PerfTaller",
+                    "listener datos: $listenerKey docs=${snapshot?.size() ?: 0} visibles=${listaActual.size} ${tallerMovimientosPrestamoCacheAtMs - eventStartMs}ms",
+                )
                 updateTableFromList(listaActual, filterInput.text.toString(), listContainer, resumenLabel)
             }
-        firestoreListeners.add(herramientasListener)
+        firestoreListeners.add(listenerKey, herramientasListener)
     }
 
 internal fun MainActivity.updateTableFromList(
@@ -1955,6 +2042,7 @@ internal fun MainActivity.showEliminarHerramientaForm() {
                 .setPositiveButton("Sí, eliminar") { _, _ ->
                     db.eliminarHerramienta(selectedTool.id)
                     registrarCambioLocal("ELIMINAR_HERRAMIENTA", TallerCanonicos.MODULO, selectedTool.id.toString(), "Herramienta eliminada: ${selectedTool.nombre}", selectedTool.estado, "Eliminada")
+                    marcarCacheTallerTrasCambio("eliminar_herramienta")
                     saved("Herramienta eliminada correctamente")
                     showHerramientasMenu()
                 }
@@ -2195,6 +2283,7 @@ internal fun MainActivity.showRegistroHerramientaForm(
                     "Item Taller registrado: ${herramientaNueva.nombre}"
                 }
                 registrarCambioLocal(accionLocal, TallerCanonicos.MODULO, herramientaIdLocal.toString(), descripcionLocal, "", herramientaNueva.estado)
+                marcarCacheTallerTrasCambio(accionLocal.lowercase(Locale.getDefault()))
                 obtenerInfoUsuario(auth.currentUser?.uid ?: "") { usuario ->
                     val data = dataHerramientaCloud(herramientaGuardada, herramientaIdLocal, usuario)
                     fun finalizarRegistro(mensaje: String) {
@@ -3265,7 +3354,27 @@ internal fun MainActivity.renderTrasladoBodegaRojaForm(
     }
 }
 
-internal fun MainActivity.sincronizarHerramientasDesdeNube(onDone: () -> Unit) {
+internal fun MainActivity.sincronizarHerramientasDesdeNube(force: Boolean = false, onDone: () -> Unit) {
+    val startMs = android.os.SystemClock.elapsedRealtime()
+    val herramientasLocales = db.obtenerHerramientas().size
+    val edadCache = if (tallerInventoryLastPreparedAtMs > 0L) startMs - tallerInventoryLastPreparedAtMs else Long.MAX_VALUE
+    if (!force && herramientasLocales > 0 && edadCache < TALLER_INVENTORY_CACHE_MS) {
+        android.util.Log.d(
+            "PerfTaller",
+            "consulta herramientas cache docsLocales=$herramientasLocales edad=${edadCache}ms nube=omitida",
+        )
+        onDone()
+        return
+    }
+    if (!force && herramientasLocales > 0 && !isNetworkAvailable()) {
+        android.util.Log.d(
+            "PerfTaller",
+            "consulta herramientas local_offline docsLocales=$herramientasLocales nube=omitida",
+        )
+        onDone()
+        return
+    }
+    android.util.Log.d("PerfTaller", "consulta herramientas inicio force=$force docsLocales=$herramientasLocales")
     firestore.collection("herramientas").get().addOnSuccessListener { snapshot ->
         var nuevas = 0
         var actualizadas = 0
@@ -3313,9 +3422,15 @@ internal fun MainActivity.sincronizarHerramientasDesdeNube(onDone: () -> Unit) {
             "ArlesGestión",
             "SYNC herramientas: nuevas=$nuevas actualizadas=$actualizadas submodulos=$conteoSubmodulos"
         )
+        tallerInventoryLastPreparedAtMs = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d(
+            "PerfTaller",
+            "consulta herramientas fin docs=${snapshot.size()} nuevas=$nuevas actualizadas=$actualizadas fuente=nube ${tallerInventoryLastPreparedAtMs - startMs}ms",
+        )
         onDone()
     }.addOnFailureListener { error ->
         android.util.Log.e("ArlesGestión", "SYNC herramientas falló", error)
+        android.util.Log.d("PerfTaller", "consulta herramientas fallo ${android.os.SystemClock.elapsedRealtime() - startMs}ms")
         Toast.makeText(this, "No se pudo descargar inventario. Revisa conexion y permisos.", Toast.LENGTH_SHORT).show()
         onDone()
     }
