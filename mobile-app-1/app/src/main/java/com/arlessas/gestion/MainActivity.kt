@@ -99,6 +99,13 @@ class MainActivity : ComponentActivity() {
     internal var lastAIResponseId: String? = null
     internal var iaRequestSeq: Int = 0
     internal var iaContextoRemotoCache: IaContextoRemotoCache? = null
+    internal var iaStockGeneralCacheAtMs: Long = 0L
+    internal var iaStockGeneralCacheCompleta: Boolean = false
+    internal var iaStockGeneralExistenciasDocs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
+    internal var iaStockGeneralAseoDocs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
+    internal var iaStockGeneralHerramientasDocs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
+    internal var iaStockAseoCacheAtMs: Long = 0L
+    internal var iaStockAseoDocs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
     
     internal var onEvidenciaCapturada: ((String) -> Unit)? = null
     internal var fotoUriActual: Uri? = null

@@ -465,6 +465,14 @@ internal fun MainActivity.ejecutarBackupEnNube(contenido: String) {
 }
 
 internal fun MainActivity.guardarFirestoreOffline(coleccion: String, data: Map<String, Any?>) {
+    if (
+        coleccion == "existencias" ||
+        coleccion == "herramientas" ||
+        coleccion == "movimientos" ||
+        coleccion == AseoCanonicos.COLECCION
+    ) {
+        invalidarCacheStockGeneralIA("guardarFirestoreOffline:$coleccion")
+    }
     db.insertarPendienteSync(coleccion, data)
 }
 
@@ -591,8 +599,11 @@ internal fun MainActivity.exportarInventarioAseoCsv(docs: List<DocumentSnapshot>
 }
 
 internal fun MainActivity.exportarCsv() {
+    val exportStart = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfPrincipal", "export csv general inicio source=local manual=true")
     registrarCambioLocal("EXPORTAR_CSV", "Sistema", "", "Exportación de inventario a CSV")
     pendingCsv = db.construirCsvCompleto()
+    android.util.Log.d("PerfPrincipal", "export csv general fin bytes=${pendingCsv?.length ?: 0} dur=${android.os.SystemClock.elapsedRealtime() - exportStart}ms manual=true")
     val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
         addCategory(Intent.CATEGORY_OPENABLE)
         type = "text/csv"
