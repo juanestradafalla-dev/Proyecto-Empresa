@@ -55,8 +55,13 @@ import com.google.gson.reflect.TypeToken
 // Archivo modularizado con funciones de extensión de MainActivity.
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
-internal fun MainActivity.prepararPantalla() {
+internal fun MainActivity.prepararPantalla(nombrePantalla: String = currentScreenId) {
+        val start = android.os.SystemClock.elapsedRealtime()
         firestoreListeners.clear()
+        android.util.Log.d(
+            "PerfPrincipal",
+            "prepararPantalla $nombrePantalla ${android.os.SystemClock.elapsedRealtime() - start}ms"
+        )
     }
 
 internal fun MainActivity.pantallaActiva(): Boolean = !isFinishing && !isDestroyed
@@ -76,12 +81,16 @@ internal fun MainActivity.avisoLimiteRender(container: LinearLayout, ocultos: In
     }
 
 internal fun MainActivity.showMainMenu() {
+        val start = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("PerfPrincipal", "showMainMenu inicio")
         currentScreenBackAction = null
         
         // Si no hay usuario autenticado, mostrar login/registro
         val currentUser = auth.currentUser
         if (currentUser == null) {
+            mainMenuRequestInFlight = false
             showLoginScreen()
+            android.util.Log.d("PerfPrincipal", "showMainMenu fin ${android.os.SystemClock.elapsedRealtime() - start}ms destino=login")
             return
         }
 
@@ -89,23 +98,49 @@ internal fun MainActivity.showMainMenu() {
 
         if (AppMode.esTallerIndependiente) {
             showHerramientasMenu()
+            android.util.Log.d("PerfPrincipal", "showMainMenu fin ${android.os.SystemClock.elapsedRealtime() - start}ms destino=taller")
             return
         }
 
+        if (mainMenuUserIdCache == currentUser.uid && mainMenuSaludoCache.isNotBlank()) {
+            setupMainUI(mainMenuSaludoCache)
+            android.util.Log.d("PerfPrincipal", "showMainMenu fin ${android.os.SystemClock.elapsedRealtime() - start}ms cache=true")
+            return
+        }
+
+        if (mainMenuRequestInFlight) {
+            android.util.Log.d("PerfPrincipal", "showMainMenu fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitida=en_curso")
+            return
+        }
+
+        mainMenuRequestInFlight = true
         firestore.collection("usuarios").document(currentUser.uid).get()
             .addOnSuccessListener { doc ->
+                mainMenuRequestInFlight = false
                 val nombres = doc.getString("nombres") ?: "Usuario"
                 val cargo = doc.getString("cargo") ?: ""
                 val saludo = "Bienvenido, $nombres\n$cargo"
+                mainMenuUserIdCache = currentUser.uid
+                mainMenuSaludoCache = saludo
                 setupMainUI(saludo)
+                android.util.Log.d("PerfPrincipal", "showMainMenu fin ${android.os.SystemClock.elapsedRealtime() - start}ms cache=false")
             }
             .addOnFailureListener {
-                setupMainUI("Gestión")
+                mainMenuRequestInFlight = false
+                val saludo = "Gesti\u00f3n"
+                mainMenuUserIdCache = currentUser.uid
+                mainMenuSaludoCache = saludo
+                setupMainUI(saludo)
+                android.util.Log.d("PerfPrincipal", "showMainMenu fin ${android.os.SystemClock.elapsedRealtime() - start}ms error_usuario")
             }
     }
 
 internal fun MainActivity.sincronizarPerfilUsuarioNube() {
-        if (auth.currentUser == null) return
+        val userId = auth.currentUser?.uid ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastProfileSyncUserId == userId && now - lastProfileSyncAtMs < 300_000L) return
+        lastProfileSyncUserId = userId
+        lastProfileSyncAtMs = now
         functions.getHttpsCallable("sincronizarPerfilUsuario")
             .call()
             .addOnFailureListener { e ->
@@ -114,8 +149,22 @@ internal fun MainActivity.sincronizarPerfilUsuarioNube() {
     }
 
 internal fun MainActivity.setupMainUI(saludo: String) {
+        val start = android.os.SystemClock.elapsedRealtime()
+        val screenId = "main_menu:${auth.currentUser?.uid.orEmpty()}:${saludo.hashCode()}"
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (currentScreenId == screenId && now - lastScreenRenderAtMs < 700L) {
+            android.util.Log.d("PerfPrincipal", "showMainMenu render omitido duplicado ${now - lastScreenRenderAtMs}ms")
+            return
+        }
+        currentScreenId = screenId
+        lastScreenRenderAtMs = now
         currentScreenRenderer = { setupMainUI(saludo) }
-        val root = baseScreen(saludo, "Control de salidas, combustible, químicos, EPP y dotación", false)
+        val root = baseScreen(
+            saludo,
+            "Control de salidas, combustible, qu\u00edmicos, EPP y dotaci\u00f3n",
+            showBack = false,
+            screenId = screenId,
+        )
 
         // Mostrar versión en la parte inferior izquierda (se moverá al footer)
         /* 
@@ -268,6 +317,7 @@ internal fun MainActivity.setupMainUI(saludo: String) {
         footerRow.addView(infoBtn, LinearLayout.LayoutParams(dp(44), dp(44)))
         
         root.addView(footerRow)
+        android.util.Log.d("PerfPrincipal", "showMainMenu render fin ${android.os.SystemClock.elapsedRealtime() - start}ms")
     }
 
 internal fun MainActivity.showUiScaleSettings() {
@@ -991,8 +1041,21 @@ internal fun MainActivity.actualizarSpinnerTalla(spinner: Spinner, refs: List<St
         }
     }
 
-internal fun MainActivity.baseScreen(title: String, subtitle: String, showBack: Boolean = true, backAction: () -> Unit = { showMainMenu() }): LinearLayout {
-        prepararPantalla()
+internal fun MainActivity.baseScreen(
+        title: String,
+        subtitle: String,
+        showBack: Boolean = true,
+        screenId: String = "$title|$subtitle",
+        backAction: () -> Unit = { showMainMenu() }
+    ): LinearLayout {
+        val start = android.os.SystemClock.elapsedRealtime()
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (currentScreenId == screenId && now - lastScreenRenderAtMs < 350L) {
+            android.util.Log.d("PerfPrincipal", "baseScreen duplicada $title ${now - lastScreenRenderAtMs}ms")
+        }
+        currentScreenId = screenId
+        lastScreenRenderAtMs = now
+        prepararPantalla(screenId)
         currentScreenBackAction = if (showBack) backAction else null
         onSmartScanResult = null // Limpiar el callback al cambiar de pantalla
         
@@ -1029,7 +1092,7 @@ internal fun MainActivity.baseScreen(title: String, subtitle: String, showBack: 
                 setTextColor(verdeOscuro)
                 setBackgroundColor(Color.TRANSPARENT)
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                setAnimatedClick(this) { backAction() }
+                setAnimatedClick(this) { handleBackPress() }
             }
             root.addView(back, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
         }
@@ -1053,6 +1116,7 @@ internal fun MainActivity.baseScreen(title: String, subtitle: String, showBack: 
         root.addView(subtitleView)
 
         setContentView(frame)
+        android.util.Log.d("PerfPrincipal", "baseScreen nombrePantalla=$title fin ${android.os.SystemClock.elapsedRealtime() - start}ms")
         return root
     }
 

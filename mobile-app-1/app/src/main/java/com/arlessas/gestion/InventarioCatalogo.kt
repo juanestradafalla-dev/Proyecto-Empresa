@@ -45,7 +45,55 @@ import com.google.gson.reflect.TypeToken
 // Archivo modularizado con funciones de extensión de MainActivity.
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
-internal fun MainActivity.sincronizarCatalogo(onDone: (() -> Unit)? = null) {
+internal fun MainActivity.sincronizarCatalogo(
+    usarCacheSiReciente: Boolean = false,
+    onDone: (() -> Unit)? = null,
+) {
+    val start = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d(
+        "PerfPrincipal",
+        "sincronizarCatalogo inicio cache=${catalogoCargado.isNotEmpty()} diferible=$usarCacheSiReciente"
+    )
+    if (
+        usarCacheSiReciente &&
+        catalogoCargado.isNotEmpty() &&
+        start - lastCatalogSyncAtMs < 60_000L
+    ) {
+        android.util.Log.d(
+            "PerfPrincipal",
+            "sincronizarCatalogo fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitida=cache_reciente"
+        )
+        onDone?.invoke()
+        return
+    }
+    onDone?.let { catalogoSyncCallbacks.add(it) }
+    if (catalogoSincronizando) {
+        catalogoSyncRepetirAlFinalizar = catalogoSyncRepetirAlFinalizar || !usarCacheSiReciente
+        android.util.Log.d(
+            "PerfPrincipal",
+            "sincronizarCatalogo fin ${android.os.SystemClock.elapsedRealtime() - start}ms omitida=en_curso"
+        )
+        return
+    }
+    catalogoSincronizando = true
+
+    fun finalizarCatalogo(resultado: String) {
+        lastCatalogSyncAtMs = android.os.SystemClock.elapsedRealtime()
+        catalogoSincronizando = false
+        val callbacks = catalogoSyncCallbacks.toList()
+        catalogoSyncCallbacks.clear()
+        callbacks.forEach { callback -> runCatching { callback() } }
+        val repetir = catalogoSyncRepetirAlFinalizar
+        catalogoSyncRepetirAlFinalizar = false
+        android.util.Log.d(
+            "PerfPrincipal",
+            "sincronizarCatalogo fin ${android.os.SystemClock.elapsedRealtime() - start}ms resultado=$resultado callbacks=${callbacks.size}"
+        )
+        if (repetir && pantallaActiva()) {
+            sincronizarCatalogo()
+        }
+    }
+
     val catalogoFinal: MutableMap<String, MutableMap<String, MutableMap<String, MutableList<String>>>> = mutableMapOf()
 
     fun cargarCatalogoEstatico(destino: MutableMap<String, MutableMap<String, MutableMap<String, MutableList<String>>>>) {
@@ -154,8 +202,8 @@ internal fun MainActivity.sincronizarCatalogo(onDone: (() -> Unit)? = null) {
 
             catalogoCargado = catalogoFinal
             db.guardarMemoria("catalogo_completo", Gson().toJson(catalogoFinal))
-            onDone?.invoke()
             android.util.Log.d("ArlesGestión", "CATÁLOGO: Sincronización limpia completada.")
+            finalizarCatalogo("ok docs=${existencias.size()}")
         }
         .addOnFailureListener { e ->
             android.util.Log.e("ArlesGestión", "Error sincronizando catálogo: ${e.message}")
@@ -168,7 +216,7 @@ internal fun MainActivity.sincronizarCatalogo(onDone: (() -> Unit)? = null) {
             } catch (ex: Exception) {
                 android.util.Log.e("ArlesGestión", "Error cargando memoria offline: ${ex.message}")
             }
-            onDone?.invoke()
+            finalizarCatalogo("error=${e.localizedMessage ?: "desconocido"}")
         }
 }
 
