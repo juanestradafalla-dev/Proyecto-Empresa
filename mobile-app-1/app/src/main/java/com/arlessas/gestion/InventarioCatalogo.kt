@@ -2917,10 +2917,19 @@ private fun MainActivity.showInventarioScreenInterno() {
 
         attachInventoryListener()
         root.addView(outlineButton("Exportar este inventario a CSV") {
+            val exportStart = android.os.SystemClock.elapsedRealtime()
             if (moduloSeleccionado == AseoCanonicos.MODULO) {
-                firestore.collection(AseoCanonicos.COLECCION).get().addOnSuccessListener { exportarInventarioAseoCsv(it.documents) }
+                android.util.Log.d("PerfPrincipal", "consulta export inventario inicio modulo=$moduloSeleccionado source=nube limit=sin_limit manual=true")
+                firestore.collection(AseoCanonicos.COLECCION).get().addOnSuccessListener {
+                    android.util.Log.d("PerfPrincipal", "consulta export inventario fin modulo=$moduloSeleccionado docs=${it.size()} dur=${android.os.SystemClock.elapsedRealtime() - exportStart}ms manual=true")
+                    exportarInventarioAseoCsv(it.documents)
+                }
             } else {
-                firestore.collection("existencias").whereEqualTo("modulo", moduloSeleccionado).get().addOnSuccessListener { exportarInventarioActualCsv(it.documents) }
+                android.util.Log.d("PerfPrincipal", "consulta export inventario inicio modulo=$moduloSeleccionado source=nube where=modulo limit=sin_limit manual=true")
+                firestore.collection("existencias").whereEqualTo("modulo", moduloSeleccionado).get().addOnSuccessListener {
+                    android.util.Log.d("PerfPrincipal", "consulta export inventario fin modulo=$moduloSeleccionado docs=${it.size()} dur=${android.os.SystemClock.elapsedRealtime() - exportStart}ms manual=true")
+                    exportarInventarioActualCsv(it.documents)
+                }
             }
         })
     }
@@ -3219,6 +3228,7 @@ internal fun MainActivity.showTablaMovimientos() {
         val movimientosScreenId = currentScreenId
         val movimientosSearchHandler = Handler(Looper.getMainLooper())
         var movimientosSearchRunnable: Runnable? = null
+        var movimientosCacheDocs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
 
         fun mostrarDetalleMovimiento(doc: com.google.firebase.firestore.DocumentSnapshot) {
             val tipo = doc.getString("tipoMovimiento") ?: doc.getString("tipo") ?: "Salida"
@@ -3251,6 +3261,87 @@ internal fun MainActivity.showTablaMovimientos() {
             }
         }
 
+        fun movimientoCoincideBusqueda(doc: com.google.firebase.firestore.DocumentSnapshot, queryText: String): Boolean {
+            if (queryText.isBlank()) return true
+            val busqueda = (doc.getString("item") ?: "") +
+                (doc.getString("codigo_interno") ?: "") +
+                (doc.getString("codigoInterno") ?: "") +
+                (doc.getString("codigo_original") ?: "") +
+                (doc.getString("codigo") ?: "") +
+                doc.id +
+                (doc.getString("solicitante") ?: "") +
+                (doc.getString("referencia") ?: "") +
+                (doc.getString("labor") ?: "")
+            return normalizarBusqueda(busqueda).contains(queryText)
+        }
+
+        fun renderMovimientosDesdeCache(origen: String) {
+            if (currentScreenId != movimientosScreenId) {
+                android.util.Log.d("PerfPrincipal", "render movimientos omitido=pantalla_inactiva origen=$origen")
+                return
+            }
+            val renderStart = android.os.SystemClock.elapsedRealtime()
+            val queryText = normalizarBusqueda(search.text.toString())
+            limpiarLista()
+
+            val docs = movimientosCacheDocs
+                .sortedByDescending { it.getString("fecha") ?: "" }
+                .filter { doc -> movimientoCoincideBusqueda(doc, queryText) }
+
+            android.util.Log.d(
+                "PerfPrincipal",
+                "consulta movimientos cache modulo=$moduloSeleccionado origen=$origen docs_cache=${movimientosCacheDocs.size} filtrados=${docs.size} filtro=${queryText.isNotBlank()} dur=${android.os.SystemClock.elapsedRealtime() - renderStart}ms",
+            )
+
+            if (docs.isEmpty()) {
+                val mensaje = if (queryText.isNotBlank()) {
+                    "No hay coincidencias para la bÃºsqueda en $moduloSeleccionado."
+                } else {
+                    "No hay registros visibles en $moduloSeleccionado."
+                }
+                resumenLabel.text = "$moduloSeleccionado: 0 movimientos"
+                listaContainer.addView(tallerEmptyState("Sin movimientos", mensaje))
+                return
+            }
+
+            val limiteVisible = if (queryText.isBlank()) {
+                performanceConfig.movementQueryLimit().toInt()
+            } else {
+                performanceConfig.movementRenderLimit()
+            }
+            val (visible, ocultos) = RenderLimiter.applyLimit(docs, limiteVisible)
+            resumenLabel.text = buildString {
+                append("$moduloSeleccionado: ${docs.size} movimientos")
+                if (ocultos > 0) append(" | +$ocultos ocultos (usa el filtro)")
+            }
+
+            visible.forEach { doc ->
+                val tipo = doc.getString("tipoMovimiento") ?: doc.getString("tipo") ?: "Salida"
+                val cantStr = doc.get("cantidad")?.toString() ?: "0"
+                val codigoMov = doc.getString("codigo_original")
+                    ?: doc.getString("codigo_interno")
+                    ?: doc.getString("codigoInterno")
+                    ?: doc.getString("codigo")
+                    ?: ""
+                listaContainer.addView(
+                    catalogoMovimientoCard(
+                        fecha = doc.getString("fecha")?.takeLast(11) ?: "â€”",
+                        tipo = tipo,
+                        codigo = codigoMov,
+                        producto = doc.getString("item") ?: "â€”",
+                        cantidad = cantStr,
+                        unidad = doc.getString("unidad") ?: "",
+                        solicitante = doc.getString("solicitante") ?: doc.getString("responsable") ?: "",
+                        labor = doc.getString("labor") ?: "",
+                        observaciones = doc.getString("observaciones") ?: "",
+                        requiereAjuste = doc.getBoolean("requiere_ajuste_stock") == true,
+                        tieneFoto = doc.getString("fotoUrl").orEmpty().isNotBlank(),
+                        accent = accentActual(),
+                    ) { mostrarDetalleMovimiento(doc) },
+                )
+            }
+        }
+
         fun updateTableRealTime() {
             if (currentScreenId != movimientosScreenId) {
                 android.util.Log.d("PerfPrincipal", "listener movimientos omitido=pantalla_inactiva")
@@ -3258,6 +3349,7 @@ internal fun MainActivity.showTablaMovimientos() {
             }
             firestoreListeners.remove(currentListener)
             currentListener = null
+            movimientosCacheDocs = emptyList()
             limpiarLista()
             resumenLabel.text = "Sincronizando $moduloSeleccionado..."
 
@@ -3265,7 +3357,7 @@ internal fun MainActivity.showTablaMovimientos() {
             val listenerModulo = moduloSeleccionado
             val listenerKey = "movimientos:$listenerModulo"
             val listenerStart = android.os.SystemClock.elapsedRealtime()
-            android.util.Log.d("PerfPrincipal", "listener movimientos crear modulo=$listenerModulo limite=${performanceConfig.movementQueryLimit()} filtro=${queryText.isNotBlank()}")
+            android.util.Log.d("PerfPrincipal", "listener movimientos crear modulo=$listenerModulo limite=${performanceConfig.movementQueryLimit()} filtro_local=true")
             val queryBase = firestore.collection("movimientos")
             val registration = if (TallerCanonicos.esModuloTaller(listenerModulo)) {
                 queryBase
@@ -3293,6 +3385,9 @@ internal fun MainActivity.showTablaMovimientos() {
                         "PerfPrincipal",
                         "listener movimientos modulo=$listenerModulo docs=${rawDocs.size} callback=${android.os.SystemClock.elapsedRealtime() - callbackStart}ms desde_creacion=${android.os.SystemClock.elapsedRealtime() - listenerStart}ms"
                     )
+                    movimientosCacheDocs = rawDocs
+                    renderMovimientosDesdeCache("listener")
+                    if (movimientosCacheDocs === rawDocs) return@addSnapshotListener
                     val docs = rawDocs
                         .sortedByDescending { it.getString("fecha") ?: "" }
                         .filter { doc ->
@@ -3380,8 +3475,8 @@ internal fun MainActivity.showTablaMovimientos() {
                 movimientosSearchRunnable?.let { movimientosSearchHandler.removeCallbacks(it) }
                 movimientosSearchRunnable = Runnable {
                     if (currentScreenId != movimientosScreenId) return@Runnable
-                    android.util.Log.d("PerfPrincipal", "listener movimientos filtro debounce modulo=$moduloSeleccionado")
-                    updateTableRealTime()
+                    android.util.Log.d("PerfPrincipal", "consulta movimientos evitada por cache modulo=$moduloSeleccionado motivo=filtro_local")
+                    renderMovimientosDesdeCache("filtro_local")
                 }
                 movimientosSearchHandler.postDelayed(movimientosSearchRunnable!!, 450L)
             }

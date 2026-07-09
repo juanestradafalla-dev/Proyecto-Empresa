@@ -50,6 +50,7 @@ import com.google.gson.reflect.TypeToken
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
 private const val IA_LOG_TAG = "AsistenteIA"
+private const val IA_STOCK_GENERAL_CACHE_TTL_MS = 60_000L
 
 internal fun mensajeErrorAsistenteNube(error: Exception): String {
     if (error is FirebaseFunctionsException) {
@@ -437,11 +438,37 @@ internal fun MainActivity.responderStockAseoIA(
         return
     }
 
+    val cacheStart = android.os.SystemClock.elapsedRealtime()
+    if (
+        iaStockAseoCacheAtMs > 0L &&
+        cacheStart - iaStockAseoCacheAtMs <= IA_STOCK_GENERAL_CACHE_TTL_MS &&
+        iaStockAseoDocs.isNotEmpty()
+    ) {
+        Log.d(
+            "PerfPrincipal",
+            "consulta IA stock aseo cache docs=${iaStockAseoDocs.size} dur=${android.os.SystemClock.elapsedRealtime() - cacheStart}ms",
+        )
+        entregar(filasAseoParaConsultaIA(consulta, iaStockAseoDocs, 8))
+        return
+    }
+
+    val consultaStart = android.os.SystemClock.elapsedRealtime()
+    Log.d("PerfPrincipal", "consulta IA stock aseo detalle inicio source=nube limit=sin_limit")
     firestore.collection(AseoCanonicos.COLECCION).get()
         .addOnSuccessListener { snapshot ->
+            iaStockAseoDocs = snapshot.documents
+            iaStockAseoCacheAtMs = android.os.SystemClock.elapsedRealtime()
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock aseo detalle fin docs=${snapshot.size()} source=nube limit=sin_limit dur=${android.os.SystemClock.elapsedRealtime() - consultaStart}ms",
+            )
             entregar(filasAseoParaConsultaIA(consulta, snapshot.documents, 8))
         }
         .addOnFailureListener {
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock aseo detalle error=${it.localizedMessage ?: "desconocido"} dur=${android.os.SystemClock.elapsedRealtime() - consultaStart}ms",
+            )
             entregar(filasAseoParaConsultaIA(consulta, limite = 8))
         }
 }
@@ -457,6 +484,17 @@ internal data class ResultadoStockGeneralIA(
     val score: Double,
     val activo: Boolean = true,
 )
+
+internal fun MainActivity.invalidarCacheStockGeneralIA(motivo: String) {
+    iaStockGeneralCacheAtMs = 0L
+    iaStockGeneralCacheCompleta = false
+    iaStockGeneralExistenciasDocs = emptyList()
+    iaStockGeneralAseoDocs = emptyList()
+    iaStockGeneralHerramientasDocs = emptyList()
+    iaStockAseoCacheAtMs = 0L
+    iaStockAseoDocs = emptyList()
+    Log.d("PerfPrincipal", "consulta IA stock general cache invalidada motivo=$motivo")
+}
 
 internal fun MainActivity.puntuarStockGeneralIA(consulta: String, texto: String): Double {
     if (consulta.isBlank() || texto.isBlank()) return 0.0
@@ -589,39 +627,108 @@ internal fun MainActivity.responderStockGeneralIA(
         return
     }
 
-    var pendientes = 3
-    fun parteLista() {
-        pendientes--
-        if (pendientes <= 0) entregar()
+    val cacheStart = android.os.SystemClock.elapsedRealtime()
+    val cacheValida = iaStockGeneralCacheCompleta &&
+        iaStockGeneralCacheAtMs > 0L &&
+        cacheStart - iaStockGeneralCacheAtMs <= IA_STOCK_GENERAL_CACHE_TTL_MS
+    if (cacheValida) {
+        acumulado.addAll(resultadosExistenciasGeneralIA(consulta, iaStockGeneralExistenciasDocs))
+        acumulado.addAll(resultadosAseoGeneralIA(consulta, iaStockGeneralAseoDocs))
+        acumulado.addAll(resultadosHerramientasGeneralIA(consulta, iaStockGeneralHerramientasDocs))
+        Log.d(
+            "PerfPrincipal",
+            "consulta IA stock general cache docs_existencias=${iaStockGeneralExistenciasDocs.size} docs_aseo=${iaStockGeneralAseoDocs.size} docs_herramientas=${iaStockGeneralHerramientasDocs.size} dur=${android.os.SystemClock.elapsedRealtime() - cacheStart}ms",
+        )
+        entregar()
+        return
     }
 
+    val consultaStart = android.os.SystemClock.elapsedRealtime()
+    var pendientes = 3
+    var consultasExitosas = 0
+    fun parteLista() {
+        pendientes--
+        if (pendientes <= 0) {
+            iaStockGeneralCacheCompleta = consultasExitosas == 3
+            if (iaStockGeneralCacheCompleta) {
+                iaStockGeneralCacheAtMs = android.os.SystemClock.elapsedRealtime()
+            }
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock general nube fin docs_existencias=${iaStockGeneralExistenciasDocs.size} docs_aseo=${iaStockGeneralAseoDocs.size} docs_herramientas=${iaStockGeneralHerramientasDocs.size} dur=${android.os.SystemClock.elapsedRealtime() - consultaStart}ms",
+            )
+            entregar()
+        }
+    }
+
+    val limiteExistencias = maxOf(performanceConfig.inventoryQueryLimit(), 2000L)
+    val existenciasStart = android.os.SystemClock.elapsedRealtime()
+    Log.d("PerfPrincipal", "consulta IA stock existencias inicio source=nube limit=$limiteExistencias")
     firestore.collection("existencias")
-        .limit(maxOf(performanceConfig.inventoryQueryLimit(), 2000L))
+        .limit(limiteExistencias)
         .get()
         .addOnSuccessListener { snapshot ->
+            consultasExitosas++
+            iaStockGeneralExistenciasDocs = snapshot.documents
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock existencias fin docs=${snapshot.size()} source=nube limit=$limiteExistencias dur=${android.os.SystemClock.elapsedRealtime() - existenciasStart}ms",
+            )
             acumulado.addAll(resultadosExistenciasGeneralIA(consulta, snapshot.documents))
             parteLista()
         }
-        .addOnFailureListener { parteLista() }
+        .addOnFailureListener {
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock existencias error=${it.localizedMessage ?: "desconocido"} dur=${android.os.SystemClock.elapsedRealtime() - existenciasStart}ms",
+            )
+            parteLista()
+        }
 
+    val aseoStart = android.os.SystemClock.elapsedRealtime()
+    Log.d("PerfPrincipal", "consulta IA stock aseo inicio source=nube limit=sin_limit")
     firestore.collection(AseoCanonicos.COLECCION)
         .get()
         .addOnSuccessListener { snapshot ->
+            consultasExitosas++
+            iaStockGeneralAseoDocs = snapshot.documents
+            iaStockAseoDocs = snapshot.documents
+            iaStockAseoCacheAtMs = android.os.SystemClock.elapsedRealtime()
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock aseo fin docs=${snapshot.size()} source=nube limit=sin_limit dur=${android.os.SystemClock.elapsedRealtime() - aseoStart}ms",
+            )
             acumulado.addAll(resultadosAseoGeneralIA(consulta, snapshot.documents))
             parteLista()
         }
         .addOnFailureListener {
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock aseo error=${it.localizedMessage ?: "desconocido"} dur=${android.os.SystemClock.elapsedRealtime() - aseoStart}ms",
+            )
             acumulado.addAll(resultadosAseoGeneralIA(consulta))
             parteLista()
         }
 
+    val herramientasStart = android.os.SystemClock.elapsedRealtime()
+    Log.d("PerfPrincipal", "consulta IA stock herramientas inicio source=nube limit=sin_limit")
     firestore.collection("herramientas")
         .get()
         .addOnSuccessListener { snapshot ->
+            consultasExitosas++
+            iaStockGeneralHerramientasDocs = snapshot.documents
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock herramientas fin docs=${snapshot.size()} source=nube limit=sin_limit dur=${android.os.SystemClock.elapsedRealtime() - herramientasStart}ms",
+            )
             acumulado.addAll(resultadosHerramientasGeneralIA(consulta, snapshot.documents))
             parteLista()
         }
         .addOnFailureListener {
+            Log.d(
+                "PerfPrincipal",
+                "consulta IA stock herramientas error=${it.localizedMessage ?: "desconocido"} dur=${android.os.SystemClock.elapsedRealtime() - herramientasStart}ms",
+            )
             acumulado.addAll(resultadosHerramientasGeneralIA(consulta))
             parteLista()
         }
