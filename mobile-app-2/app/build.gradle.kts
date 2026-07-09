@@ -5,12 +5,17 @@ plugins {
     id("com.android.application")
 }
 
+val googleServicesFile = project.file("google-services.json")
 val releaseSigningPropertiesFile = rootProject.file("app/signing/release-signing.properties")
 val releaseSigningProperties = Properties()
 val hasReleaseSigning = releaseSigningPropertiesFile.exists()
 
 if (hasReleaseSigning) {
     releaseSigningProperties.load(FileInputStream(releaseSigningPropertiesFile))
+}
+
+if (googleServicesFile.exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 fun firebaseConfigValue(name: String, fallback: String): String =
@@ -48,11 +53,13 @@ android {
         buildConfigField("boolean", "INCLUDE_TALLER", "true")
         buildConfigField("boolean", "TALLER_STANDALONE", "true")
 
-        resValue("string", "google_app_id", firebaseConfigValue("FIREBASE_GOOGLE_APP_ID", "missing-google-app-id"))
-        resValue("string", "google_api_key", firebaseConfigValue("FIREBASE_GOOGLE_API_KEY", "missing-google-api-key"))
-        resValue("string", "gcm_defaultSenderId", firebaseConfigValue("FIREBASE_GCM_SENDER_ID", "missing-sender-id"))
-        resValue("string", "project_id", firebaseConfigValue("FIREBASE_PROJECT_ID", "missing-project-id"))
-        resValue("string", "google_storage_bucket", firebaseConfigValue("FIREBASE_STORAGE_BUCKET", "missing-storage-bucket"))
+        if (!googleServicesFile.exists()) {
+            resValue("string", "google_app_id", firebaseConfigValue("FIREBASE_GOOGLE_APP_ID", "missing-google-app-id"))
+            resValue("string", "google_api_key", firebaseConfigValue("FIREBASE_GOOGLE_API_KEY", "missing-google-api-key"))
+            resValue("string", "gcm_defaultSenderId", firebaseConfigValue("FIREBASE_GCM_SENDER_ID", "missing-sender-id"))
+            resValue("string", "project_id", firebaseConfigValue("FIREBASE_PROJECT_ID", "missing-project-id"))
+            resValue("string", "google_storage_bucket", firebaseConfigValue("FIREBASE_STORAGE_BUCKET", "missing-storage-bucket"))
+        }
     }
 
     sourceSets {
