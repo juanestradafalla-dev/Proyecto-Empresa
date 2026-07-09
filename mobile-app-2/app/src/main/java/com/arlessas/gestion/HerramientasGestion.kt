@@ -54,6 +54,8 @@ import com.google.gson.reflect.TypeToken
 // Archivo modularizado con funciones de extensión de MainActivity.
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
+private const val TALLER_INVENTORY_CACHE_MS = 60_000L
+
 internal fun claveHerramientaCloud(herramienta: Herramienta): String {
         val base = herramienta.codigo.ifBlank {
             listOf(herramienta.nombre, herramienta.marca, herramienta.referencia).joinToString("-")
@@ -791,11 +793,62 @@ internal fun herramientaDesdeDocumentoFirestore(doc: com.google.firebase.firesto
 }
 
 internal fun MainActivity.prepararInventarioTaller(onReady: () -> Unit) {
-    // Primero descargamos el estado actual de la nube (disponibilidad/ocupados)
-    sincronizarHerramientasDesdeNube {
-        // Luego sincronizamos la estructura canÃ³nica localmente
-        sincronizarHerramientasTallerCanonicas()
+    val startMs = android.os.SystemClock.elapsedRealtime()
+    val screenAtRequest = currentScreenId
+
+    fun runIfStillCurrent() {
+        if (!pantallaActiva()) return
+        if (screenAtRequest.isNotBlank() && currentScreenId != screenAtRequest) {
+            android.util.Log.d(
+                "PerfTaller",
+                "prepararInventarioTaller callback omitido: solicitado=$screenAtRequest actual=$currentScreenId",
+            )
+            return
+        }
         onReady()
+    }
+
+    val now = android.os.SystemClock.elapsedRealtime()
+    val hayDatosLocales = db.obtenerHerramientas().isNotEmpty()
+    val usarLocalPorRetroceso = isBackNavigationInProgress && hayDatosLocales
+    val cacheVigente = tallerInventoryLastPreparedAtMs > 0L &&
+        now - tallerInventoryLastPreparedAtMs < TALLER_INVENTORY_CACHE_MS &&
+        hayDatosLocales
+
+    if (cacheVigente || usarLocalPorRetroceso) {
+        android.util.Log.d(
+            "PerfTaller",
+            "prepararInventarioTaller cache ${now - tallerInventoryLastPreparedAtMs}ms back=$usarLocalPorRetroceso screen=$screenAtRequest",
+        )
+        runIfStillCurrent()
+        return
+    }
+
+    if (tallerInventoryPreparing) {
+        android.util.Log.d("PerfTaller", "prepararInventarioTaller en_progreso screen=$screenAtRequest")
+        tallerInventoryPendingCallbacks.add { runIfStillCurrent() }
+        return
+    }
+
+    tallerInventoryPreparing = true
+    tallerInventoryPendingCallbacks.add { runIfStillCurrent() }
+    android.util.Log.d("PerfTaller", "prepararInventarioTaller ejecutado screen=$screenAtRequest")
+
+    fun finishPreparation() {
+        tallerInventoryLastPreparedAtMs = android.os.SystemClock.elapsedRealtime()
+        tallerInventoryPreparing = false
+        val callbacks = tallerInventoryPendingCallbacks.toList()
+        tallerInventoryPendingCallbacks.clear()
+        android.util.Log.d(
+            "PerfTaller",
+            "prepararInventarioTaller fin ${tallerInventoryLastPreparedAtMs - startMs}ms callbacks=${callbacks.size}",
+        )
+        callbacks.forEach { it.invoke() }
+    }
+
+    sincronizarHerramientasDesdeNube {
+        sincronizarHerramientasTallerCanonicas()
+        finishPreparation()
     }
 }
 

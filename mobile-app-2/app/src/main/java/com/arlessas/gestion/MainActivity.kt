@@ -72,6 +72,14 @@ class MainActivity : ComponentActivity() {
     internal var onSmartScanResult: ((String, String, String, String) -> Unit)? = null
     internal var currentScreenBackAction: (() -> Unit)? = null
     internal var currentScreenRenderer: () -> Unit = { showMainMenu() }
+    internal var currentScreenId: String = ""
+    internal var lastScreenId: String = ""
+    internal var lastScreenRenderedAtMs: Long = 0L
+    internal var isBackNavigationInProgress: Boolean = false
+    internal var lastBackPressAtMs: Long = 0L
+    internal var tallerInventoryPreparing: Boolean = false
+    internal var tallerInventoryLastPreparedAtMs: Long = 0L
+    internal val tallerInventoryPendingCallbacks = mutableListOf<() -> Unit>()
     internal var aiDialog: Dialog? = null
     internal var activeAIInput: EditText? = null
     internal var activeAIChatContainer: LinearLayout? = null
