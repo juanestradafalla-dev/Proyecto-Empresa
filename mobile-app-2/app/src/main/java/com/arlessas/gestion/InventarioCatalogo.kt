@@ -2723,22 +2723,31 @@ private fun MainActivity.showInventarioScreenInterno() {
             resumenLabel.text = "Sincronizando $moduloSeleccionado..."
 
             val limite = performanceConfig.inventoryQueryLimit()
+            val listenerKey = "inventario:$moduloSeleccionado"
+            val listenerStartMs = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d("PerfTaller", "listener preparar: $listenerKey limit=$limite")
             val registration = if (moduloSeleccionado.equals(AseoCanonicos.MODULO, ignoreCase = true)) {
                 cacheAseoDocs = emptyList()
                 pintarInventarioAseoActualizado(emptyList())
                 firestore.collection(AseoCanonicos.COLECCION)
                     .limit(limite)
                     .addSnapshotListener { snapshot, e ->
+                        val eventStartMs = android.os.SystemClock.elapsedRealtime()
                         ejecutarEnUi {
                             if (!pantallaActiva()) return@ejecutarEnUi
                             try {
                                 if (e != null) {
                                     android.util.Log.e("ArlesGestion", "Error leyendo productos_aseo: ${e.message}")
+                                    android.util.Log.d("PerfTaller", "listener datos: $listenerKey error ${eventStartMs - listenerStartMs}ms")
                                     resumenLabel.text = "ASEO sin conexión · mostrando catálogo local"
                                     pintarInventarioAseoActualizado(emptyList())
                                     return@ejecutarEnUi
                                 }
                                 cacheAseoDocs = snapshot?.documents ?: emptyList()
+                                android.util.Log.d(
+                                    "PerfTaller",
+                                    "listener datos: $listenerKey docs=${snapshot?.size() ?: 0} ${android.os.SystemClock.elapsedRealtime() - eventStartMs}ms",
+                                )
                                 pintarInventarioAseoActualizado(cacheAseoDocs)
                             } catch (listenerError: Exception) {
                                 android.util.Log.e("ArlesGestion", "Error en listener ASEO", listenerError)
@@ -2756,22 +2765,28 @@ private fun MainActivity.showInventarioScreenInterno() {
                     .whereEqualTo("modulo", moduloSeleccionado)
                     .limit(limite)
                     .addSnapshotListener { snapshot, e ->
+                        val eventStartMs = android.os.SystemClock.elapsedRealtime()
                         ejecutarEnUi {
                             if (!pantallaActiva()) return@ejecutarEnUi
                             if (e != null) {
+                                android.util.Log.d("PerfTaller", "listener datos: $listenerKey error ${eventStartMs - listenerStartMs}ms")
                                 limpiarLista()
                                 resumenLabel.text = "Error de conexion."
                                 mostrarInventarioVacio("No se pudo leer existencias de $moduloSeleccionado.")
                                 return@ejecutarEnUi
                             }
                             cacheExistenciasDocs = snapshot?.documents ?: emptyList()
+                            android.util.Log.d(
+                                "PerfTaller",
+                                "listener datos: $listenerKey docs=${snapshot?.size() ?: 0} ${android.os.SystemClock.elapsedRealtime() - eventStartMs}ms",
+                            )
                             pintarInventarioExistenciasActualizado(cacheExistenciasDocs)
                         }
                     }
             }
 
             currentListener = registration
-            firestoreListeners.add(registration)
+            firestoreListeners.add(listenerKey, registration)
         }
 
         modulos.forEach { mod ->
@@ -3094,6 +3109,8 @@ internal fun MainActivity.showTablaMovimientos() {
 
         var currentListener: com.google.firebase.firestore.ListenerRegistration? = null
 
+        var cacheMovimientoDocs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
+
         fun mostrarDetalleMovimiento(doc: com.google.firebase.firestore.DocumentSnapshot) {
             val tipo = doc.getString("tipoMovimiento") ?: doc.getString("tipo") ?: "Salida"
             val cantObj = doc.get("cantidad")
@@ -3125,12 +3142,84 @@ internal fun MainActivity.showTablaMovimientos() {
             }
         }
 
+        fun renderMovimientosDesdeCache() {
+            if (!pantallaActiva()) return
+            limpiarLista()
+            val queryTextActual = normalizarBusqueda(search.text.toString())
+            val docs = cacheMovimientoDocs
+                .sortedByDescending { it.getString("fecha") ?: "" }
+                .filter { doc ->
+                    if (queryTextActual.isBlank()) true
+                    else {
+                        val busqueda = (doc.getString("item") ?: "") +
+                            (doc.getString("codigo_interno") ?: "") +
+                            (doc.getString("codigoInterno") ?: "") +
+                            (doc.getString("codigo_original") ?: "") +
+                            (doc.getString("codigo") ?: "") +
+                            doc.id +
+                            (doc.getString("solicitante") ?: "") +
+                            (doc.getString("referencia") ?: "") +
+                            (doc.getString("labor") ?: "")
+                        normalizarBusqueda(busqueda).contains(queryTextActual)
+                    }
+                }
+
+            if (docs.isEmpty()) {
+                val mensaje = if (queryTextActual.isNotBlank()) {
+                    "No hay coincidencias para la busqueda en $moduloSeleccionado."
+                } else {
+                    "No hay registros visibles en $moduloSeleccionado."
+                }
+                resumenLabel.text = "$moduloSeleccionado: 0 movimientos"
+                listaContainer.addView(tallerEmptyState("Sin movimientos", mensaje))
+                return
+            }
+
+            val limiteVisible = if (queryTextActual.isBlank()) {
+                performanceConfig.movementQueryLimit().toInt()
+            } else {
+                performanceConfig.movementRenderLimit()
+            }
+            val (visible, ocultos) = RenderLimiter.applyLimit(docs, limiteVisible)
+            resumenLabel.text = buildString {
+                append("$moduloSeleccionado: ${docs.size} movimientos")
+                if (ocultos > 0) append(" | +$ocultos ocultos (usa el filtro)")
+            }
+
+            visible.forEach { doc ->
+                val tipo = doc.getString("tipoMovimiento") ?: doc.getString("tipo") ?: "Salida"
+                val cantStr = doc.get("cantidad")?.toString() ?: "0"
+                val codigoMov = doc.getString("codigo_original")
+                    ?: doc.getString("codigo_interno")
+                    ?: doc.getString("codigoInterno")
+                    ?: doc.getString("codigo")
+                    ?: ""
+                listaContainer.addView(
+                    catalogoMovimientoCard(
+                        fecha = doc.getString("fecha")?.takeLast(11) ?: "-",
+                        tipo = tipo,
+                        codigo = codigoMov,
+                        producto = doc.getString("item") ?: "-",
+                        cantidad = cantStr,
+                        unidad = doc.getString("unidad") ?: "",
+                        solicitante = doc.getString("solicitante") ?: doc.getString("responsable") ?: "",
+                        labor = doc.getString("labor") ?: "",
+                        observaciones = doc.getString("observaciones") ?: "",
+                        requiereAjuste = doc.getBoolean("requiere_ajuste_stock") == true,
+                        tieneFoto = doc.getString("fotoUrl").orEmpty().isNotBlank(),
+                        accent = accentActual(),
+                    ) { mostrarDetalleMovimiento(doc) },
+                )
+            }
+        }
+
         fun updateTableRealTime() {
             firestoreListeners.remove(currentListener)
-            currentListener?.remove()
             limpiarLista()
             resumenLabel.text = "Sincronizando $moduloSeleccionado..."
 
+            val listenerKey = "movimientos:$moduloSeleccionado"
+            android.util.Log.d("PerfTaller", "listener preparar: $listenerKey limit=${performanceConfig.movementQueryLimit()}")
             val queryText = normalizarBusqueda(search.text.toString())
             val queryBase = firestore.collection("movimientos")
             val registration = if (TallerCanonicos.esModuloTaller(moduloSeleccionado)) {
@@ -3142,6 +3231,7 @@ internal fun MainActivity.showTablaMovimientos() {
                     .whereEqualTo("modulo", moduloSeleccionado)
                     .limit(performanceConfig.movementQueryLimit())
             }.addSnapshotListener { snapshot, e ->
+                    val eventStartMs = android.os.SystemClock.elapsedRealtime()
                     if (!pantallaActiva()) return@addSnapshotListener
                     limpiarLista()
 
@@ -3153,6 +3243,13 @@ internal fun MainActivity.showTablaMovimientos() {
                     }
 
                     val rawDocs = snapshot?.documents ?: emptyList()
+                    cacheMovimientoDocs = rawDocs
+                    android.util.Log.d(
+                        "PerfTaller",
+                        "listener datos: $listenerKey docs=${snapshot?.size() ?: 0} ${android.os.SystemClock.elapsedRealtime() - eventStartMs}ms",
+                    )
+                    renderMovimientosDesdeCache()
+                    return@addSnapshotListener
                     val docs = rawDocs
                         .sortedByDescending { it.getString("fecha") ?: "" }
                         .filter { doc ->
@@ -3221,7 +3318,7 @@ internal fun MainActivity.showTablaMovimientos() {
                 }
 
             currentListener = registration
-            firestoreListeners.add(registration)
+            firestoreListeners.add(listenerKey, registration)
         }
 
         modulos.forEach { mod ->
@@ -3236,7 +3333,7 @@ internal fun MainActivity.showTablaMovimientos() {
 
         search.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updateTableRealTime() }
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { renderMovimientosDesdeCache() }
             override fun afterTextChanged(s: Editable?) {}
         })
 

@@ -80,6 +80,8 @@ class MainActivity : ComponentActivity() {
     internal var tallerInventoryPreparing: Boolean = false
     internal var tallerInventoryLastPreparedAtMs: Long = 0L
     internal val tallerInventoryPendingCallbacks = mutableListOf<() -> Unit>()
+    internal var tallerMovimientosPrestamoCache: List<Movimiento> = emptyList()
+    internal var tallerMovimientosPrestamoCacheAtMs: Long = 0L
     internal var aiDialog: Dialog? = null
     internal var activeAIInput: EditText? = null
     internal var activeAIChatContainer: LinearLayout? = null

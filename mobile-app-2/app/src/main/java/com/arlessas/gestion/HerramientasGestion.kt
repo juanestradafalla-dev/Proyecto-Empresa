@@ -55,6 +55,7 @@ import com.google.gson.reflect.TypeToken
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
 private const val TALLER_INVENTORY_CACHE_MS = 60_000L
+private const val TALLER_MOVEMENTS_CACHE_MS = 45_000L
 
 internal fun claveHerramientaCloud(herramienta: Herramienta): String {
         val base = herramienta.codigo.ifBlank {
@@ -489,7 +490,20 @@ internal fun MainActivity.movimientosLocalesTaller(): List<Movimiento> {
 
 internal fun MainActivity.cargarMovimientosPrestamosTaller(onReady: (List<Movimiento>) -> Unit) {
     fun usarLocales() {
+        android.util.Log.d("PerfTaller", "consulta prestamos_taller local")
         onReady(movimientosLocalesTaller())
+    }
+
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (tallerMovimientosPrestamoCache.isNotEmpty() &&
+        now - tallerMovimientosPrestamoCacheAtMs < TALLER_MOVEMENTS_CACHE_MS
+    ) {
+        android.util.Log.d(
+            "PerfTaller",
+            "consulta prestamos_taller cache docs=${tallerMovimientosPrestamoCache.size} edad=${now - tallerMovimientosPrestamoCacheAtMs}ms",
+        )
+        onReady(tallerMovimientosPrestamoCache)
+        return
     }
 
     if (!isNetworkAvailable()) {
@@ -497,6 +511,8 @@ internal fun MainActivity.cargarMovimientosPrestamosTaller(onReady: (List<Movimi
         return
     }
 
+    val startMs = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfTaller", "consulta prestamos_taller inicio limit=${performanceConfig.movementQueryLimit()}")
     firestore.collection("movimientos")
         .whereIn("modulo", listOf(TallerCanonicos.MODULO, TallerCanonicos.MODULO_LEGACY))
         .limit(performanceConfig.movementQueryLimit())
@@ -507,9 +523,16 @@ internal fun MainActivity.cargarMovimientosPrestamosTaller(onReady: (List<Movimi
                     .map(::movimientoDesdeDocTaller)
                     .filter { TallerCanonicos.esModuloTaller(it.modulo) },
             )
+            tallerMovimientosPrestamoCache = movimientosNube
+            tallerMovimientosPrestamoCacheAtMs = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d(
+                "PerfTaller",
+                "consulta prestamos_taller fin docs=${snapshot.size()} utiles=${movimientosNube.size} ${tallerMovimientosPrestamoCacheAtMs - startMs}ms",
+            )
             if (movimientosNube.isEmpty()) usarLocales() else onReady(movimientosNube)
         }
         .addOnFailureListener {
+            android.util.Log.d("PerfTaller", "consulta prestamos_taller fallo ${android.os.SystemClock.elapsedRealtime() - startMs}ms")
             usarLocales()
         }
 }
@@ -1836,13 +1859,18 @@ internal fun MainActivity.showHistorialMovimientosHerramientas(subModulo: String
             override fun afterTextChanged(p0: Editable?) {}
         })
 
+        val listenerKey = "historial_taller:${subModulo.ifBlank { "todos" }}"
+        val listenerStartMs = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.d("PerfTaller", "listener preparar: $listenerKey limit=${performanceConfig.movementQueryLimit()}")
         val herramientasListener = firestore.collection("movimientos")
             .whereIn("modulo", listOf(TallerCanonicos.MODULO, TallerCanonicos.MODULO_LEGACY))
             .limit(performanceConfig.movementQueryLimit())
             .addSnapshotListener { snapshot, e ->
+                val eventStartMs = android.os.SystemClock.elapsedRealtime()
                 if (!pantallaActiva()) return@addSnapshotListener
                 if (e != null) {
                     android.util.Log.e("ArlesGestion", "Error en movimientos taller: ${e.message}")
+                    android.util.Log.d("PerfTaller", "listener datos: $listenerKey error ${eventStartMs - listenerStartMs}ms")
                     listaActual = ordenarMovimientosTallerPorFecha(
                         db.obtenerMovimientos()
                             .filter { TallerCanonicos.esModuloTaller(it.modulo) }
@@ -1856,9 +1884,18 @@ internal fun MainActivity.showHistorialMovimientosHerramientas(subModulo: String
                         .filter { TallerCanonicos.esModuloTaller(it.modulo) }
                         .filter { movimientoPerteneceSubmoduloTaller(it, subModulo) },
                 )
+                tallerMovimientosPrestamoCache = ordenarMovimientosTallerPorFecha(
+                    (snapshot?.documents ?: emptyList()).map(::movimientoDesdeDocTaller)
+                        .filter { TallerCanonicos.esModuloTaller(it.modulo) },
+                )
+                tallerMovimientosPrestamoCacheAtMs = android.os.SystemClock.elapsedRealtime()
+                android.util.Log.d(
+                    "PerfTaller",
+                    "listener datos: $listenerKey docs=${snapshot?.size() ?: 0} visibles=${listaActual.size} ${tallerMovimientosPrestamoCacheAtMs - eventStartMs}ms",
+                )
                 updateTableFromList(listaActual, filterInput.text.toString(), listContainer, resumenLabel)
             }
-        firestoreListeners.add(herramientasListener)
+        firestoreListeners.add(listenerKey, herramientasListener)
     }
 
 internal fun MainActivity.updateTableFromList(
@@ -3266,6 +3303,8 @@ internal fun MainActivity.renderTrasladoBodegaRojaForm(
 }
 
 internal fun MainActivity.sincronizarHerramientasDesdeNube(onDone: () -> Unit) {
+    val startMs = android.os.SystemClock.elapsedRealtime()
+    android.util.Log.d("PerfTaller", "consulta herramientas inicio")
     firestore.collection("herramientas").get().addOnSuccessListener { snapshot ->
         var nuevas = 0
         var actualizadas = 0
@@ -3313,9 +3352,14 @@ internal fun MainActivity.sincronizarHerramientasDesdeNube(onDone: () -> Unit) {
             "ArlesGestión",
             "SYNC herramientas: nuevas=$nuevas actualizadas=$actualizadas submodulos=$conteoSubmodulos"
         )
+        android.util.Log.d(
+            "PerfTaller",
+            "consulta herramientas fin docs=${snapshot.size()} nuevas=$nuevas actualizadas=$actualizadas ${android.os.SystemClock.elapsedRealtime() - startMs}ms",
+        )
         onDone()
     }.addOnFailureListener { error ->
         android.util.Log.e("ArlesGestión", "SYNC herramientas falló", error)
+        android.util.Log.d("PerfTaller", "consulta herramientas fallo ${android.os.SystemClock.elapsedRealtime() - startMs}ms")
         Toast.makeText(this, "No se pudo descargar inventario. Revisa conexion y permisos.", Toast.LENGTH_SHORT).show()
         onDone()
     }
