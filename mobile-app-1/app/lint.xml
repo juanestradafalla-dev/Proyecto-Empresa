@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Esta app genera la interfaz por código Kotlin.
+         Se desactivan estas advertencias para evitar ruido en Android Studio. -->
+    <issue id="HardcodedText" severity="ignore" />
+    <issue id="SetTextI18n" severity="ignore" />
+</lint>

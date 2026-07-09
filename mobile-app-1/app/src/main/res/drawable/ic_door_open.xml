@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Marco de la puerta -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M5,3v18h14V3H5z M17,19H7V5h10V19z" />
+    <!-- Hoja de la puerta abierta (perspectiva) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7,5l7,2v10l-7,2V5z" />
+    <!-- Pomo de la puerta -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M12,12h1v1h-1z" />
+</vector>

@@ -1,0 +1,42 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email == "juanestradafalla@gmail.com";
+    }
+
+    function isPhotoUpload() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size < 25 * 1024 * 1024;
+    }
+
+    match /evidencias/{allPaths=**} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && isPhotoUpload();
+      allow delete: if isOwner();
+    }
+
+    match /equipos/{allPaths=**} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && isPhotoUpload();
+      allow delete: if isOwner();
+    }
+
+    match /reportes_campo/{allPaths=**} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && isPhotoUpload();
+      allow delete: if isOwner();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

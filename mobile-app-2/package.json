@@ -1,0 +1,11 @@
+{
+  "name": "gestion-mobile-taller",
+  "private": true,
+  "version": "4.0.0-taller",
+  "description": "Aplicacion movil independiente para Taller Arles.",
+  "scripts": {
+    "debug": "gradle :app:assembleDebug --warning-mode all",
+    "release": "gradle :app:assembleRelease --warning-mode all",
+    "clean": "gradle clean"
+  }
+}

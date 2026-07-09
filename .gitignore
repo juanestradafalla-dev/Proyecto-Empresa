@@ -1,0 +1,116 @@
+# =========================
+# DEPENDENCIAS
+# =========================
+node_modules/
+**/node_modules/
+
+# =========================
+# VARIABLES DE ENTORNO / CLAVES
+# =========================
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+**/.env
+**/.env.local
+**/.env.development
+**/.env.production
+**/.env.test
+
+# =========================
+# BUILDS / COMPILADOS GENERADOS
+# =========================
+dist/
+build/
+out/
+release/
+release-store/
+win-unpacked/
+**/dist/
+**/build/
+**/out/
+**/release/
+**/release-store/
+**/win-unpacked/
+
+# =========================
+# ELECTRON / DESKTOP
+# =========================
+desktop-program/node_modules/
+desktop-program/dist/
+desktop-program/build/
+desktop-program/out/
+desktop-program/release/
+desktop-program/release-store/
+desktop-program/win-unpacked/
+desktop-program/.env
+
+# =========================
+# ANDROID / REACT NATIVE
+# =========================
+.gradle/
+**/.gradle/
+local.properties
+**/local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Llaves Android - NO subir
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+**/google-services.json
+**/GoogleService-Info.plist
+**/serviceAccount*.json
+**/*firebase-adminsdk*.json
+
+# =========================
+# IOS
+# =========================
+Pods/
+**/Pods/
+DerivedData/
+*.xcworkspace
+*.xcuserstate
+
+# =========================
+# CACHE
+# =========================
+.cache/
+.expo/
+.next/
+.nuxt/
+.turbo/
+.parcel-cache/
+.vite/
+coverage/
+**/.cache/
+**/.expo/
+**/.next/
+**/.turbo/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# =========================
+# LOGS
+# =========================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# EDITORES / SISTEMA
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
