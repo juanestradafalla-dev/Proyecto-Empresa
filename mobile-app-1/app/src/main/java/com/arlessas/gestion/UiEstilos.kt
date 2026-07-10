@@ -182,15 +182,37 @@ internal fun MainActivity.setupMainUI(saludo: String) {
         topParent.addView(versionTop, versionParamsTop)
         */
 
-        // Logo de la empresa
-        val logo = ImageView(this).apply {
-            setImageResource(R.drawable.logo_andes)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(108)).apply {
-                setMargins(0, 0, 0, dp(12))
+        // Marca textual de la empresa
+        val marcaEmpresa = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, dp(10))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, dp(8))
             }
-            scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        root.addView(logo, 2) // Insertar después del subtítulo
+        marcaEmpresa.addView(TextView(this).apply {
+            text = "Gestión Arles"
+            textSize = 26f
+            setTextColor(verdeOscuro)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        })
+        marcaEmpresa.addView(TextView(this).apply {
+            text = "Control operativo de almacén"
+            textSize = 15f
+            setTextColor(verde)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, 0)
+        })
+        marcaEmpresa.addView(TextView(this).apply {
+            text = "Inventario • Producción • Control"
+            textSize = 12f
+            setTextColor(gris)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(3), 0, 0)
+        })
+        root.addView(marcaEmpresa, 2) // Insertar después del subtítulo
 
         // Contenedor para la cuadrícula 2x2
         val grid = LinearLayout(this).apply {
