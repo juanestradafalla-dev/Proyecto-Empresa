@@ -25,6 +25,34 @@ import com.google.gson.reflect.TypeToken
 // Archivo modularizado con funciones de extensión de MainActivity.
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
+private const val BUG_SPINNERS_TAG = "BugSpinners"
+
+private fun esPlaceholderSpinnerDependiente(valor: String): Boolean {
+    val normalizado = normalizarBusqueda(valor)
+    return valor.isBlank() ||
+        normalizado.startsWith("selecciona") ||
+        normalizado.startsWith("sin-") ||
+        normalizado.startsWith("no-hay")
+}
+
+private fun MainActivity.adapterSpinnerDependiente(valores: List<String>): ArrayAdapter<String> {
+    return ArrayAdapter(this, android.R.layout.simple_spinner_item, valores).apply {
+        setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+    }
+}
+
+private fun seleccionarValorSpinnerDependiente(spinner: Spinner, valores: List<String>, valor: String): Boolean {
+    if (valor.isBlank()) return false
+    val pos = valores.indexOfFirst { it == valor || referenciasInventarioCoinciden(valor, it) }
+    if (pos < 0) return false
+    spinner.setSelection(pos, false)
+    return true
+}
+
+private fun limpiarTagSpinnerDependiente(spinner: Spinner) {
+    spinner.postDelayed({ if (spinner.tag == "SINCRO") spinner.tag = null }, 100)
+}
+
 internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
         currentScreenRenderer = { showDotacionForm(pItem, pCant, pSol, pCat, pRef) }
         val root = baseScreen("Entrega de Dotación", "Control de vestuario y calzado para el personal.")
@@ -36,7 +64,7 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
             "Calzado"
         )
 
-        fun getCatalogo(): Map<String, MutableMap<String, MutableList<String>>> {
+        fun crearCatalogoDotacion(): Map<String, MutableMap<String, MutableList<String>>> {
             val base = catalogoCargado["Dotación"] ?: emptyMap()
             return categoriasDotacionPermitidas.associateWith { categoria ->
                 base[categoria]?.mapValues { (_, refs) ->
@@ -45,11 +73,22 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
             }
         }
 
+        val catalogoFormulario = crearCatalogoDotacion()
+        fun getCatalogo() = catalogoFormulario
+        fun catalogoDotacionComoMapAny(): Map<String, Any> {
+            @Suppress("UNCHECKED_CAST")
+            return catalogoFormulario as Map<String, Any>
+        }
+
         val parteSpinner = spinner(root, "Parte del cuerpo *", getCatalogo().keys.toList())
         val itemSpinner = spinner(root, "Prenda *", listOf("Selecciona parte"))
         val tallaSpinner = spinner(root, "Talla *", listOf("Selecciona prenda"))
         val codigoInterno = codigoInternoField(root, "Código interno", "Escribe el código si existe", scan = false)
         var codigoInternoSeleccionado = ""
+        var actualizandoSpinnerDotacion = false
+        var parteSeleccionada = pCat
+        var prendaSeleccionada = pItem
+        var tallaSeleccionada = pRef
 
         val stockDisponible = stockInfoCard("Disponible: selecciona una prenda para consultar stock")
         root.addView(stockDisponible)
@@ -61,6 +100,61 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
 
         fun opcionDotacionValida(valor: String): Boolean {
             return valor.isNotBlank() && !valor.startsWith("Selecciona") && !valor.startsWith("Sin ")
+        }
+
+        fun prendasDotacion(parte: String): List<String> {
+            val itemsMap = getCatalogo()[parte] ?: mapOf()
+            val prendas = itemsMap.keys.toList().sortedBy { normalizarBusqueda(it) }
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=Dotacion categoria=$parte items=${prendas.size}")
+            return prendas.ifEmpty { listOf("Sin prendas registradas") }
+        }
+
+        fun tallasDotacion(parte: String, prenda: String): List<String> {
+            val tallas = getCatalogo()[parte]?.get(prenda)
+                ?.map { referenciaDotacionPresentable(it) }
+                ?.distinct()
+                .orEmpty()
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=Dotacion item=$prenda referencias=${tallas.size}")
+            return tallas.ifEmpty { listOf("Sin tallas registradas") }
+        }
+
+        fun actualizarTallasDotacion(origen: String, preservar: Boolean = true) {
+            val parte = parteSeleccionada.ifBlank { parteSpinner.selectedItem?.toString().orEmpty() }
+            val prenda = prendaSeleccionada.ifBlank { itemSpinner.selectedItem?.toString().orEmpty() }
+            actualizandoSpinnerDotacion = true
+            tallaSpinner.tag = "SINCRO"
+            val tallas = tallasDotacion(parte, prenda)
+            tallaSpinner.adapter = adapterSpinnerDependiente(tallas)
+            val preservada = preservar && seleccionarValorSpinnerDependiente(tallaSpinner, tallas, tallaSeleccionada)
+            if (!preservada) {
+                tallaSpinner.setSelection(0, false)
+                tallaSeleccionada = tallaSpinner.selectedItem?.toString().orEmpty()
+            } else {
+                tallaSeleccionada = tallaSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerDotacion = false
+            limpiarTagSpinnerDependiente(tallaSpinner)
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=Dotacion referenciaPreservada=$preservada origen=$origen")
+        }
+
+        fun actualizarPrendasDotacion(origen: String, preservar: Boolean = true) {
+            val parte = parteSeleccionada.ifBlank { parteSpinner.selectedItem?.toString().orEmpty() }
+            actualizandoSpinnerDotacion = true
+            itemSpinner.tag = "SINCRO"
+            val prendas = prendasDotacion(parte)
+            itemSpinner.adapter = adapterSpinnerDependiente(prendas)
+            val preservada = preservar && seleccionarValorSpinnerDependiente(itemSpinner, prendas, prendaSeleccionada)
+            if (!preservada) {
+                itemSpinner.setSelection(0, false)
+                prendaSeleccionada = itemSpinner.selectedItem?.toString().orEmpty()
+                tallaSeleccionada = ""
+            } else {
+                prendaSeleccionada = itemSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerDotacion = false
+            limpiarTagSpinnerDependiente(itemSpinner)
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=Dotacion itemPreservado=$preservada origen=$origen")
+            actualizarTallasDotacion(origen, preservar = preservada)
         }
 
         fun mostrarStockDotacion(producto: ExistenciaProducto?) {
@@ -98,12 +192,12 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
 
         setupCodigoInternoSalida(root, codigoInterno, "Dotación") { producto ->
             codigoInternoSeleccionado = producto.codigoInterno
-            seleccionarProductoDesdeExistencia(producto, parteSpinner, itemSpinner, tallaSpinner, getCatalogo() as Map<String, Any>)
+            seleccionarProductoDesdeExistencia(producto, parteSpinner, itemSpinner, tallaSpinner, catalogoDotacionComoMapAny())
             mostrarStockDotacion(producto)
         }
 
         setupSearchBar(root, "Dotación") { _, c, i, r ->
-            seleccionarProductoEnSpinners(parteSpinner, itemSpinner, tallaSpinner, getCatalogo() as Map<String, Any>, c, i, r) {
+            seleccionarProductoEnSpinners(parteSpinner, itemSpinner, tallaSpinner, catalogoDotacionComoMapAny(), c, i, r) {
                 autocompletarCodigoDesdeProducto(codigoInterno, "Dotación", i, r) { producto ->
                     codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
                     mostrarStockDotacion(producto)
@@ -112,7 +206,7 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
         }
 
         if (pCat.isNotBlank() && pItem.isNotBlank()) {
-            seleccionarProductoEnSpinners(parteSpinner, itemSpinner, tallaSpinner, getCatalogo() as Map<String, Any>, pCat, pItem, pRef) {
+            seleccionarProductoEnSpinners(parteSpinner, itemSpinner, tallaSpinner, catalogoDotacionComoMapAny(), pCat, pItem, pRef) {
                 autocompletarCodigoDesdeProducto(codigoInterno, "Dotación", pItem, pRef) { encontrado ->
                     codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
                     mostrarStockDotacion(encontrado)
@@ -122,23 +216,16 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
 
         parteSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                val parte = parteSpinner.selectedItem?.toString() ?: ""
-                @Suppress("UNCHECKED_CAST")
-                val itemsMap = (getCatalogo()[parte] as? Map<String, Any>) ?: mapOf()
-                val items = itemsMap.keys.toList().ifEmpty { listOf("Sin prendas registradas") }
-                val adapter = ArrayAdapter(this@showDotacionForm, android.R.layout.simple_spinner_item, items)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                itemSpinner.adapter = adapter
-
-                val itemInicial = items.firstOrNull().orEmpty()
-                val tallas = (itemsMap[itemInicial] as? List<String>)
-                    ?.map { referenciaDotacionPresentable(it) }
-                    ?.distinct()
-                    ?.ifEmpty { listOf("Sin tallas registradas") }
-                    ?: listOf("Sin tallas registradas")
-                val tallaAdapter = ArrayAdapter(this@showDotacionForm, android.R.layout.simple_spinner_item, tallas)
-                tallaAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                tallaSpinner.adapter = tallaAdapter
+                if (actualizandoSpinnerDotacion || parteSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=Dotacion seleccion inicial categoria ignorada")
+                    return
+                }
+                parteSeleccionada = parteSpinner.selectedItem?.toString().orEmpty()
+                val itemActual = itemSpinner.selectedItem?.toString().orEmpty()
+                val tallaActual = tallaSpinner.selectedItem?.toString().orEmpty()
+                prendaSeleccionada = if (!esPlaceholderSpinnerDependiente(itemActual)) itemActual else ""
+                tallaSeleccionada = if (!esPlaceholderSpinnerDependiente(tallaActual)) tallaActual else ""
+                actualizarPrendasDotacion("categoria", preservar = true)
                 actualizarInfoStockDotacion()
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
@@ -146,22 +233,14 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
 
         itemSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                val parte = parteSpinner.selectedItem?.toString() ?: ""
-                val itemKey = itemSpinner.selectedItem?.toString() ?: ""
-                @Suppress("UNCHECKED_CAST")
-                val tallas = ((getCatalogo()[parte] as? Map<String, Any>)?.get(itemKey) as? List<String>)
-                    ?.map { referenciaDotacionPresentable(it) }
-                    ?.distinct()
-                    ?.ifEmpty { listOf("Sin tallas registradas") }
-                    ?: listOf("Sin tallas registradas")
-                val adapter = ArrayAdapter(this@showDotacionForm, android.R.layout.simple_spinner_item, tallas)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                tallaSpinner.adapter = adapter
-                
-                if (pRef.isNotBlank()) {
-                    val pos = adapter.getPosition(pRef)
-                    if (pos >= 0) tallaSpinner.setSelection(pos)
+                if (actualizandoSpinnerDotacion || itemSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=Dotacion seleccion inicial item ignorada")
+                    return
                 }
+                prendaSeleccionada = itemSpinner.selectedItem?.toString().orEmpty()
+                val tallaActual = tallaSpinner.selectedItem?.toString().orEmpty()
+                tallaSeleccionada = if (!esPlaceholderSpinnerDependiente(tallaActual)) tallaActual else tallaSeleccionada
+                actualizarTallasDotacion("item", preservar = true)
 
                 if (itemSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
                     codigoInternoSeleccionado = ""
@@ -174,8 +253,13 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
 
         tallaSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
+                if (actualizandoSpinnerDotacion || tallaSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=Dotacion seleccion inicial referencia ignorada")
+                    return
+                }
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val tallaVal = tallaSpinner.selectedItem?.toString() ?: ""
+                tallaSeleccionada = tallaVal
                 if (opcionDotacionValida(itemVal) && opcionDotacionValida(tallaVal)) {
                     autocompletarCodigoDesdeProducto(codigoInterno, "Dotación", itemVal, tallaVal) { producto ->
                         codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
@@ -185,6 +269,13 @@ internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
+
+        parteSeleccionada = parteSpinner.selectedItem?.toString().orEmpty().ifBlank { parteSeleccionada }
+        val prendaInicio = itemSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderSpinnerDependiente(prendaInicio)) prendaSeleccionada = prendaInicio
+        val tallaInicio = tallaSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderSpinnerDependiente(tallaInicio)) tallaSeleccionada = tallaInicio
+        actualizarPrendasDotacion("inicio", preservar = true)
 
         val cantidad = field(root, "Cantidad *", "Ej: 1", number = true)
         cantidad.setText(pCant.ifBlank { "1" })
@@ -322,10 +413,10 @@ private fun MainActivity.showQuimicoInventarioForm(
         }
         val root = baseScreen(titulo, subtitulo)
 
-        fun getCatalogo() = catalogoCargado[moduloOperativo] ?: mapOf()
+        fun catalogoQuimicoActual() = catalogoCargado[moduloOperativo] ?: mapOf()
         fun esValido(valor: String) = valor.isNotBlank() && !valor.startsWith("Selecciona")
 
-        if (!catalogoRefrescado && getCatalogo().isEmpty()) {
+        if (!catalogoRefrescado && catalogoQuimicoActual().isEmpty()) {
             root.addView(infoText("Sincronizando inventario..."))
             sincronizarCatalogo {
                 if (pantallaActiva()) {
@@ -333,6 +424,13 @@ private fun MainActivity.showQuimicoInventarioForm(
                 }
             }
             return
+        }
+
+        val catalogoFormulario = catalogoQuimicoActual()
+        fun getCatalogo() = catalogoFormulario
+        fun catalogoQuimicoComoMapAny(): Map<String, Any> {
+            @Suppress("UNCHECKED_CAST")
+            return catalogoFormulario as Map<String, Any>
         }
 
         val catSpinner = spinner(root, "Categor\u00eda *", getCatalogo().keys.toList())
@@ -352,11 +450,74 @@ private fun MainActivity.showQuimicoInventarioForm(
         var codigoOriginalSeleccionado = ""
         var ubicacionesActuales = listOf<QuimicoUbicacionStock>()
         var ubicacionSeleccionada: QuimicoUbicacionStock? = null
+        var actualizandoSpinnerQuimico = false
+        var categoriaSeleccionada = pCat
+        var subcategoriaSeleccionada = pItem
+        var itemSeleccionado = pRef.ifBlank { pItem }
 
         fun setUnidad(unidadSpinner: Spinner, unidad: String) {
             val adapter = unidadSpinner.adapter as? ArrayAdapter<String> ?: return
             val pos = adapter.getPosition(unidad.ifBlank { "UNIDAD" })
             if (pos >= 0) unidadSpinner.setSelection(pos)
+        }
+
+        fun subcategoriasQuimico(categoria: String): List<String> {
+            val subcategorias = (getCatalogo()[categoria] as? Map<*, *>)?.keys
+                ?.map { it.toString() }
+                ?.filterNot { esEntradaCatalogoSulcamagVieja(it) }
+                ?.sortedBy { normalizarBusqueda(it) }
+                .orEmpty()
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=$titulo categoria=$categoria items=${subcategorias.size}")
+            return subcategorias.ifEmpty { listOf("Selecciona categoría") }
+        }
+
+        fun itemsQuimico(categoria: String, subcategoria: String): List<String> {
+            val items = ((getCatalogo()[categoria] as? Map<*, *>)?.get(subcategoria) as? List<*>)
+                ?.mapNotNull { it?.toString()?.trim() }
+                ?.filter { it.isNotBlank() }
+                ?.distinct()
+                .orEmpty()
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=$titulo item=$subcategoria referencias=${items.size}")
+            return items.ifEmpty { listOf("Selecciona subcategoría") }
+        }
+
+        fun actualizarItemsQuimico(origen: String, preservar: Boolean = true) {
+            val categoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            val subcategoria = subcategoriaSeleccionada.ifBlank { subcatSpinner.selectedItem?.toString().orEmpty() }
+            actualizandoSpinnerQuimico = true
+            itemSpinner.tag = "SINCRO"
+            val items = itemsQuimico(categoria, subcategoria)
+            itemSpinner.adapter = adapterSpinnerDependiente(items)
+            val preservado = preservar && seleccionarValorSpinnerDependiente(itemSpinner, items, itemSeleccionado)
+            if (!preservado) {
+                itemSpinner.setSelection(0, false)
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+            } else {
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerQuimico = false
+            limpiarTagSpinnerDependiente(itemSpinner)
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=$titulo itemPreservado=$preservado origen=$origen")
+        }
+
+        fun actualizarSubcategoriasQuimico(origen: String, preservar: Boolean = true) {
+            val categoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            actualizandoSpinnerQuimico = true
+            subcatSpinner.tag = "SINCRO"
+            val subcategorias = subcategoriasQuimico(categoria)
+            subcatSpinner.adapter = adapterSpinnerDependiente(subcategorias)
+            val preservada = preservar && seleccionarValorSpinnerDependiente(subcatSpinner, subcategorias, subcategoriaSeleccionada)
+            if (!preservada) {
+                subcatSpinner.setSelection(0, false)
+                subcategoriaSeleccionada = subcatSpinner.selectedItem?.toString().orEmpty()
+                itemSeleccionado = ""
+            } else {
+                subcategoriaSeleccionada = subcatSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerQuimico = false
+            limpiarTagSpinnerDependiente(subcatSpinner)
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=$titulo subcategoriaPreservada=$preservada origen=$origen")
+            actualizarItemsQuimico(origen, preservar = preservada)
         }
 
         val unidadSpinner = spinner(root, "Unidad", listOf("GRAMO", "ML", "UNIDAD", "LITRO", "GALON", "KG"))
@@ -448,7 +609,7 @@ private fun MainActivity.showQuimicoInventarioForm(
                     onSelected = { opcion ->
                         val canonico = QuimicosCanonicos.buscarPorCodigoUbicacion(opcion.codigoOriginal, opcion.ubicacion, opcion.item)
                         if (canonico != null) {
-                            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, getCatalogo() as Map<String, Any>, canonico.categoria, canonico.subcategoria, canonico.item) {
+                            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, catalogoQuimicoComoMapAny(), canonico.categoria, canonico.subcategoria, canonico.item) {
                                 seleccionarUbicacion(opcion)
                             }
                         } else {
@@ -468,40 +629,44 @@ private fun MainActivity.showQuimicoInventarioForm(
             codigoInternoSeleccionado = producto.documentoId.ifBlank { producto.codigoInterno }
             codigoOriginalSeleccionado = producto.codigoOriginal.ifBlank { producto.codigoInterno }
             val subcategoria = producto.subcategoria.ifBlank { producto.ubicacion }
-            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, getCatalogo() as Map<String, Any>, producto.categoria, subcategoria, producto.item) {
+            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, catalogoQuimicoComoMapAny(), producto.categoria, subcategoria, producto.item) {
                 setUnidad(unidadSpinner, producto.unidad)
                 cargarUbicaciones(codigoOriginalSeleccionado, producto.item, producto.ubicacion)
             }
         }
 
         setupSearchBar(root, moduloOperativo) { _, c, sub, item ->
-            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, getCatalogo() as Map<String, Any>, c, sub, item) {
+            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, catalogoQuimicoComoMapAny(), c, sub, item) {
                 aplicarCanonico(QuimicosCanonicos.buscar(moduloOperativo, c, sub, item))
             }
         }
 
         catSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                val cat = catSpinner.selectedItem?.toString().orEmpty()
-                @Suppress("UNCHECKED_CAST")
-                val subcategorias = ((getCatalogo()[cat] as? Map<String, Any>)?.keys?.toList() ?: listOf())
-                    .filterNot { esEntradaCatalogoSulcamagVieja(it) }
-                val adapter = ArrayAdapter(this@showQuimicoInventarioForm, android.R.layout.simple_spinner_item, subcategorias)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                subcatSpinner.adapter = adapter
+                if (actualizandoSpinnerQuimico || catSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=$titulo seleccion inicial categoria ignorada")
+                    return
+                }
+                categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty()
+                val subActual = subcatSpinner.selectedItem?.toString().orEmpty()
+                val itemActual = itemSpinner.selectedItem?.toString().orEmpty()
+                subcategoriaSeleccionada = if (!esPlaceholderSpinnerDependiente(subActual)) subActual else ""
+                itemSeleccionado = if (!esPlaceholderSpinnerDependiente(itemActual)) itemActual else ""
+                actualizarSubcategoriasQuimico("categoria", preservar = true)
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
 
         subcatSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                val cat = catSpinner.selectedItem?.toString().orEmpty()
-                val sub = subcatSpinner.selectedItem?.toString().orEmpty()
-                @Suppress("UNCHECKED_CAST")
-                val items = (getCatalogo()[cat] as? Map<String, Any>)?.get(sub) as? List<String> ?: listOf()
-                val adapter = ArrayAdapter(this@showQuimicoInventarioForm, android.R.layout.simple_spinner_item, items)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                itemSpinner.adapter = adapter
+                if (actualizandoSpinnerQuimico || subcatSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=$titulo seleccion inicial subcategoria ignorada")
+                    return
+                }
+                subcategoriaSeleccionada = subcatSpinner.selectedItem?.toString().orEmpty()
+                val itemActual = itemSpinner.selectedItem?.toString().orEmpty()
+                itemSeleccionado = if (!esPlaceholderSpinnerDependiente(itemActual)) itemActual else itemSeleccionado
+                actualizarItemsQuimico("subcategoria", preservar = true)
                 if (subcatSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
                     aplicarCanonico(null)
                 }
@@ -511,9 +676,14 @@ private fun MainActivity.showQuimicoInventarioForm(
 
         itemSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
+                if (actualizandoSpinnerQuimico || itemSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=$titulo seleccion inicial item ignorada")
+                    return
+                }
                 val cat = catSpinner.selectedItem?.toString().orEmpty()
                 val sub = subcatSpinner.selectedItem?.toString().orEmpty()
                 val item = itemSpinner.selectedItem?.toString().orEmpty()
+                itemSeleccionado = item
                 if (esValido(cat) && esValido(sub) && esValido(item)) {
                     aplicarCanonico(QuimicosCanonicos.buscar(moduloOperativo, cat, sub, item))
                 }
@@ -522,16 +692,23 @@ private fun MainActivity.showQuimicoInventarioForm(
         }
 
         if (pCat.isNotBlank() && pRef.isNotBlank()) {
-            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, getCatalogo() as Map<String, Any>, pCat, pItem, pRef) {
+            seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, catalogoQuimicoComoMapAny(), pCat, pItem, pRef) {
                 aplicarCanonico(QuimicosCanonicos.buscar(moduloOperativo, pCat, pItem, pRef))
             }
         } else if (pItem.isNotBlank()) {
             resolverProductoCatalogo(moduloOperativo, pItem)?.let { p ->
-                seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, getCatalogo() as Map<String, Any>, p.categoria, p.item, p.referencia) {
+                seleccionarProductoEnSpinners(catSpinner, subcatSpinner, itemSpinner, catalogoQuimicoComoMapAny(), p.categoria, p.item, p.referencia) {
                     aplicarCanonico(QuimicosCanonicos.buscar(moduloOperativo, p.categoria, p.item, p.referencia))
                 }
             }
         }
+
+        categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty().ifBlank { categoriaSeleccionada }
+        val subInicio = subcatSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderSpinnerDependiente(subInicio)) subcategoriaSeleccionada = subInicio
+        val itemInicio = itemSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderSpinnerDependiente(itemInicio)) itemSeleccionado = itemInicio
+        actualizarSubcategoriasQuimico("inicio", preservar = true)
 
         val cantidad = field(root, "Cantidad *", "Ej: 1.5", number = true)
         cantidad.setText(pCant)
@@ -635,11 +812,17 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             "Cuerpo y Extremidades"
         )
 
-        fun getCatalogo(): Map<String, MutableMap<String, MutableList<String>>> {
+        fun crearCatalogoEpp(): Map<String, MutableMap<String, MutableList<String>>> {
             val base = catalogoCargado["EPP"] ?: return emptyMap()
             return categoriasEppPermitidas.mapNotNull { categoria ->
                 base[categoria]?.takeIf { it.isNotEmpty() }?.let { categoria to it }
             }.toMap()
+        }
+        val catalogoFormulario = crearCatalogoEpp()
+        fun getCatalogo() = catalogoFormulario
+        fun catalogoEppComoMapAny(): Map<String, Any> {
+            @Suppress("UNCHECKED_CAST")
+            return catalogoFormulario as Map<String, Any>
         }
 
         val catSpinner = spinner(root, "Categoría *", getCatalogo().keys.toList())
@@ -648,6 +831,11 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         val codigoInterno = codigoInternoField(root, "Código interno", "Escribe o elige el código interno", scan = false)
         var codigoInternoSeleccionado = ""
 
+        var actualizandoSpinnerEpp = false
+        var categoriaSeleccionada = pCat
+        var itemSeleccionado = pItem
+        var referenciaSeleccionada = pRef
+
         val stockDisponible = stockInfoCard("Disponible: selecciona un item para consultar stock")
         root.addView(stockDisponible)
         var stockConsultaActual = 0
@@ -655,6 +843,57 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         fun cantidadLegible(valor: Double): String {
             return if (valor % 1.0 == 0.0) valor.toInt().toString()
             else String.format(Locale.getDefault(), "%.2f", valor)
+        }
+
+        fun itemsEpp(categoria: String): List<String> {
+            val items = getCatalogo()[categoria]?.keys?.toList()?.sortedBy { normalizarBusqueda(it) }.orEmpty()
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=EPP categoria=$categoria items=${items.size}")
+            return items.ifEmpty { listOf("Sin items registrados") }
+        }
+
+        fun referenciasEpp(categoria: String, item: String): List<String> {
+            val refs = getCatalogo()[categoria]?.get(item)?.filter { it.isNotBlank() }?.distinct().orEmpty()
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=EPP item=$item referencias=${refs.size}")
+            return refs.ifEmpty { listOf("N/A") }
+        }
+
+        fun actualizarReferenciasEpp(origen: String, preservar: Boolean = true) {
+            val categoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            val item = itemSeleccionado.ifBlank { itemSpinner.selectedItem?.toString().orEmpty() }
+            actualizandoSpinnerEpp = true
+            refSpinner.tag = "SINCRO"
+            val refs = referenciasEpp(categoria, item)
+            refSpinner.adapter = adapterSpinnerDependiente(refs)
+            val preservada = preservar && seleccionarValorSpinnerDependiente(refSpinner, refs, referenciaSeleccionada)
+            if (!preservada) {
+                refSpinner.setSelection(0, false)
+                referenciaSeleccionada = refSpinner.selectedItem?.toString().orEmpty()
+            } else {
+                referenciaSeleccionada = refSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerEpp = false
+            limpiarTagSpinnerDependiente(refSpinner)
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=EPP referenciaPreservada=$preservada origen=$origen")
+        }
+
+        fun actualizarItemsEpp(origen: String, preservar: Boolean = true) {
+            val categoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            actualizandoSpinnerEpp = true
+            itemSpinner.tag = "SINCRO"
+            val items = itemsEpp(categoria)
+            itemSpinner.adapter = adapterSpinnerDependiente(items)
+            val preservado = preservar && seleccionarValorSpinnerDependiente(itemSpinner, items, itemSeleccionado)
+            if (!preservado) {
+                itemSpinner.setSelection(0, false)
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+                referenciaSeleccionada = ""
+            } else {
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerEpp = false
+            limpiarTagSpinnerDependiente(itemSpinner)
+            android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=EPP itemPreservado=$preservado origen=$origen")
+            actualizarReferenciasEpp(origen, preservar = preservado)
         }
 
         fun mostrarStock(producto: ExistenciaProducto?) {
@@ -673,8 +912,8 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         fun actualizarStockEpp(codigoPreferido: String = "") {
             val consulta = ++stockConsultaActual
             val codigo = normalizarCodigoInterno(codigoPreferido.ifBlank { codigoInterno.text?.toString().orEmpty() })
-            val itemVal = itemSpinner.selectedItem?.toString()?.takeUnless { it.startsWith("Selecciona") }.orEmpty()
-            val refVal = refSpinner.selectedItem?.toString()?.takeUnless { it.startsWith("Selecciona") }.orEmpty()
+            val itemVal = itemSpinner.selectedItem?.toString()?.takeUnless { esPlaceholderSpinnerDependiente(it) }.orEmpty()
+            val refVal = refSpinner.selectedItem?.toString()?.takeUnless { esPlaceholderSpinnerDependiente(it) }.orEmpty()
             stockDisponible.text = "Disponible: consultando..."
             stockDisponible.setTextColor(gris)
 
@@ -708,12 +947,12 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
 
         setupCodigoInternoSalida(root, codigoInterno, "EPP") { producto ->
             codigoInternoSeleccionado = producto.codigoInterno
-            seleccionarProductoDesdeExistencia(producto, catSpinner, itemSpinner, refSpinner, getCatalogo() as Map<String, Any>)
+            seleccionarProductoDesdeExistencia(producto, catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny())
             mostrarStock(producto)
         }
 
         setupSearchBar(root, "EPP") { _, c, i, r ->
-            seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, getCatalogo() as Map<String, Any>, c, i, r) {
+            seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny(), c, i, r) {
                 autocompletarCodigoDesdeProducto(codigoInterno, "EPP", i, r) { producto ->
                     codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
                     mostrarStock(producto)
@@ -722,7 +961,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         }
 
         if (pCat.isNotBlank() && pItem.isNotBlank()) {
-            seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, getCatalogo() as Map<String, Any>, pCat, pItem, pRef) {
+            seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny(), pCat, pItem, pRef) {
                 autocompletarCodigoDesdeProducto(codigoInterno, "EPP", pItem, pRef) { encontrado ->
                     codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
                     mostrarStock(encontrado)
@@ -732,27 +971,30 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
 
         catSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                if (catSpinner.tag == "SINCRO") return
-                val cat = catSpinner.selectedItem?.toString() ?: ""
-                @Suppress("UNCHECKED_CAST")
-                val items = (getCatalogo()[cat] as? Map<String, Any>)?.keys?.toList() ?: listOf()
-                val adapter = ArrayAdapter(this@showEPPForm, android.R.layout.simple_spinner_item, items)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                itemSpinner.adapter = adapter
+                if (actualizandoSpinnerEpp || catSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=EPP seleccion inicial categoria ignorada")
+                    return
+                }
+                categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty()
+                val itemActual = itemSpinner.selectedItem?.toString().orEmpty()
+                val refActual = refSpinner.selectedItem?.toString().orEmpty()
+                itemSeleccionado = if (!esPlaceholderSpinnerDependiente(itemActual)) itemActual else ""
+                referenciaSeleccionada = if (!esPlaceholderSpinnerDependiente(refActual)) refActual else ""
+                actualizarItemsEpp("categoria", preservar = true)
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
 
         itemSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                if (itemSpinner.tag == "SINCRO") return
-                val cat = catSpinner.selectedItem?.toString() ?: ""
-                val itemKey = itemSpinner.selectedItem?.toString() ?: ""
-                @Suppress("UNCHECKED_CAST")
-                val refs = (getCatalogo()[cat] as? Map<String, Any>)?.get(itemKey) as? List<String> ?: listOf()
-                val adapter = ArrayAdapter(this@showEPPForm, android.R.layout.simple_spinner_item, refs)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                refSpinner.adapter = adapter
+                if (actualizandoSpinnerEpp || itemSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=EPP seleccion inicial item ignorada")
+                    return
+                }
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+                val refActual = refSpinner.selectedItem?.toString().orEmpty()
+                referenciaSeleccionada = if (!esPlaceholderSpinnerDependiente(refActual)) refActual else referenciaSeleccionada
+                actualizarReferenciasEpp("item", preservar = true)
                 
                 // Limpieza de código previo si es manual
                 if (itemSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
@@ -765,11 +1007,14 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
 
         refSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                if (refSpinner.tag == "SINCRO") return
+                if (actualizandoSpinnerEpp || refSpinner.tag == "SINCRO") {
+                    android.util.Log.d(BUG_SPINNERS_TAG, "pantalla=EPP seleccion inicial referencia ignorada")
+                    return
+                }
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
-                if (itemVal.isNotBlank() && !itemVal.startsWith("Selecciona") &&
-                    refVal.isNotBlank() && !refVal.startsWith("Selecciona")) {
+                referenciaSeleccionada = refVal
+                if (!esPlaceholderSpinnerDependiente(itemVal) && !esPlaceholderSpinnerDependiente(refVal)) {
                     autocompletarCodigoDesdeProducto(codigoInterno, "EPP", itemVal, refVal) { producto ->
                         codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
                         mostrarStock(producto)
@@ -780,6 +1025,13 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
+
+        categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty().ifBlank { categoriaSeleccionada }
+        val itemInicio = itemSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderSpinnerDependiente(itemInicio)) itemSeleccionado = itemInicio
+        val refInicio = refSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderSpinnerDependiente(refInicio)) referenciaSeleccionada = refInicio
+        actualizarItemsEpp("inicio", preservar = true)
 
         val cantidad = field(root, "Cantidad *", "Ej: 1", number = true)
         cantidad.setText(pCant.ifBlank { "1" })
@@ -811,7 +1063,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             onEntrada = {
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
-                if (itemVal.isNotBlank() && !itemVal.startsWith("Selecciona")) {
+                if (!esPlaceholderSpinnerDependiente(itemVal)) {
                     showDialogEntradaStock("EPP", itemVal, refVal) { showEPPForm(pItem, pCant, pSol) }
                 } else {
                     Toast.makeText(this, "Selecciona un ítem primero", Toast.LENGTH_SHORT).show()
@@ -824,8 +1076,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             val itemVal = itemSpinner.selectedItem?.toString() ?: ""
             val refVal = refSpinner.selectedItem?.toString() ?: ""
             
-            if (itemVal.isBlank() || itemVal.startsWith("Selecciona") || 
-                refVal.isBlank() || refVal.startsWith("Selecciona")) {
+            if (esPlaceholderSpinnerDependiente(itemVal) || esPlaceholderSpinnerDependiente(refVal)) {
                 Toast.makeText(this, "Selecciona un ítem y referencia válidos", Toast.LENGTH_SHORT).show()
                 return@primaryButton
             }
