@@ -557,6 +557,10 @@ internal fun MainActivity.resultadosHerramientasGeneralIA(
     consulta: String,
     docs: List<com.google.firebase.firestore.DocumentSnapshot>? = null,
 ): List<ResultadoStockGeneralIA> {
+    if (!AppMode.incluyeTaller) {
+        Log.d("PerfPrincipal", "modulo taller omitido contexto=ia_stock_general")
+        return emptyList()
+    }
     val herramientas = docs
         ?.mapNotNull { herramientaDesdeDocumentoFirestore(it) }
         ?: db.obtenerHerramientas()
@@ -622,7 +626,7 @@ internal fun MainActivity.responderStockGeneralIA(
 
     if (!isNetworkAvailable()) {
         acumulado.addAll(resultadosAseoGeneralIA(consulta))
-        acumulado.addAll(resultadosHerramientasGeneralIA(consulta))
+        if (AppMode.incluyeTaller) acumulado.addAll(resultadosHerramientasGeneralIA(consulta))
         entregar()
         return
     }
@@ -644,12 +648,14 @@ internal fun MainActivity.responderStockGeneralIA(
     }
 
     val consultaStart = android.os.SystemClock.elapsedRealtime()
-    var pendientes = 3
+    val consultarHerramientas = AppMode.incluyeTaller
+    val consultasEsperadas = if (consultarHerramientas) 3 else 2
+    var pendientes = consultasEsperadas
     var consultasExitosas = 0
     fun parteLista() {
         pendientes--
         if (pendientes <= 0) {
-            iaStockGeneralCacheCompleta = consultasExitosas == 3
+            iaStockGeneralCacheCompleta = consultasExitosas == consultasEsperadas
             if (iaStockGeneralCacheCompleta) {
                 iaStockGeneralCacheAtMs = android.os.SystemClock.elapsedRealtime()
             }
@@ -710,28 +716,33 @@ internal fun MainActivity.responderStockGeneralIA(
             parteLista()
         }
 
-    val herramientasStart = android.os.SystemClock.elapsedRealtime()
-    Log.d("PerfPrincipal", "consulta IA stock herramientas inicio source=nube limit=sin_limit")
-    firestore.collection("herramientas")
-        .get()
-        .addOnSuccessListener { snapshot ->
-            consultasExitosas++
-            iaStockGeneralHerramientasDocs = snapshot.documents
-            Log.d(
-                "PerfPrincipal",
-                "consulta IA stock herramientas fin docs=${snapshot.size()} source=nube limit=sin_limit dur=${android.os.SystemClock.elapsedRealtime() - herramientasStart}ms",
-            )
-            acumulado.addAll(resultadosHerramientasGeneralIA(consulta, snapshot.documents))
-            parteLista()
-        }
-        .addOnFailureListener {
-            Log.d(
-                "PerfPrincipal",
-                "consulta IA stock herramientas error=${it.localizedMessage ?: "desconocido"} dur=${android.os.SystemClock.elapsedRealtime() - herramientasStart}ms",
-            )
-            acumulado.addAll(resultadosHerramientasGeneralIA(consulta))
-            parteLista()
-        }
+    if (consultarHerramientas) {
+        val herramientasStart = android.os.SystemClock.elapsedRealtime()
+        Log.d("PerfPrincipal", "consulta IA stock herramientas inicio source=nube limit=sin_limit")
+        firestore.collection("herramientas")
+            .get()
+            .addOnSuccessListener { snapshot ->
+                consultasExitosas++
+                iaStockGeneralHerramientasDocs = snapshot.documents
+                Log.d(
+                    "PerfPrincipal",
+                    "consulta IA stock herramientas fin docs=${snapshot.size()} source=nube limit=sin_limit dur=${android.os.SystemClock.elapsedRealtime() - herramientasStart}ms",
+                )
+                acumulado.addAll(resultadosHerramientasGeneralIA(consulta, snapshot.documents))
+                parteLista()
+            }
+            .addOnFailureListener {
+                Log.d(
+                    "PerfPrincipal",
+                    "consulta IA stock herramientas error=${it.localizedMessage ?: "desconocido"} dur=${android.os.SystemClock.elapsedRealtime() - herramientasStart}ms",
+                )
+                acumulado.addAll(resultadosHerramientasGeneralIA(consulta))
+                parteLista()
+            }
+    } else {
+        iaStockGeneralHerramientasDocs = emptyList()
+        Log.d("PerfPrincipal", "consulta IA stock herramientas omitida motivo=taller_desactivado")
+    }
 }
 
 internal fun MainActivity.responderStockAgregadoNubeIA(
@@ -880,6 +891,7 @@ internal fun esPreguntaOcupacionHerramienta(prompt: String): Boolean {
     }
 
 internal fun MainActivity.resolverHerramientaEnPrompt(prompt: String): Herramienta? {
+        if (!AppMode.incluyeTaller) return null
         val consulta = BusquedaInventarioIA.extraerFraseProducto(prompt).ifBlank { prompt }
         if (consulta.isBlank()) return null
         return herramientasTallerActivas().asSequence()
@@ -1152,6 +1164,10 @@ internal fun MainActivity.consultarHerramientasLocalesLineas(
     tokens: List<String>,
     limite: Int,
 ): List<String> {
+    if (!AppMode.incluyeTaller) {
+        Log.d("PerfPrincipal", "modulo taller omitido contexto=ia_herramientas_local")
+        return emptyList()
+    }
     return db.obtenerHerramientas().map { h ->
         val ocupacion = if (h.ocupados() > 0) "ocupada (${h.ocupados()} ${h.unidad})" else "disponible (${h.disponibles()} ${h.unidad})"
         val linea = buildString {
