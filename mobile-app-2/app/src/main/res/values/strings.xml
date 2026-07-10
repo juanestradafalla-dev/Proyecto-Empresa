@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Gestion Arles</string>
+    <string name="app_name">Taller Arles</string>
     <string name="version_label">v%s</string>
     <string name="back_label">Volver</string>
     <string name="scan_hint">Escanear codigo</string>

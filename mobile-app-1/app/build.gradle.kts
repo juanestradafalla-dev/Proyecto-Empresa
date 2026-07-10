@@ -38,7 +38,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 40
-        versionName = "4.0.0"
+        versionName = "5.0.0"
         buildConfigField("boolean", "INCLUDE_TALLER", "false")
         buildConfigField("boolean", "TALLER_STANDALONE", "false")
     }
