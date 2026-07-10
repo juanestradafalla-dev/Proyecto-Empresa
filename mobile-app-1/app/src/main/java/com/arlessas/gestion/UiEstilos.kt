@@ -218,6 +218,8 @@ internal fun MainActivity.setupMainUI(saludo: String) {
         if (AppMode.incluyeTaller) {
             row3.addView(gridButton("TALLER", R.drawable.ic_tools, ArlesPalette.accentTaller, 4) { showHerramientasMenu() }, LinearLayout.LayoutParams(0, dp(104), 1f).apply { setMargins(0, 0, dp(4), dp(8)) })
             row3.addView(gridButton("Lubricantes taller", R.drawable.ic_lubricants, ArlesPalette.accentLubricantes, 5) { showLubricantesTallerForm() }, LinearLayout.LayoutParams(0, dp(104), 1f).apply { setMargins(dp(4), 0, 0, dp(8)) })
+        } else {
+            android.util.Log.d("PerfPrincipal", "modulo taller omitido contexto=main_menu")
         }
 
         val row4 = LinearLayout(this).apply {
