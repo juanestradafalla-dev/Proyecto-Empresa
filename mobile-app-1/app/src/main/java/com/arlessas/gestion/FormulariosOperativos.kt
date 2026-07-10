@@ -1259,9 +1259,9 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         currentScreenRenderer = { showConsumiblesForm(pItem, pCant, pSol, pLab, pCat, pRef, catalogoRefrescado = true) }
         val root = baseScreen("Salida de consumibles", "Registra materiales de uso diario: repuestos, ferretería, aseo y más.")
         
-        fun getCatalogo() = catalogoCargado["Consumibles"] ?: mapOf()
+        fun catalogoConsumiblesActual() = catalogoCargado["Consumibles"] ?: mapOf()
 
-        if (!catalogoRefrescado && getCatalogo().isEmpty()) {
+        if (!catalogoRefrescado && catalogoConsumiblesActual().isEmpty()) {
             root.addView(infoText("Sincronizando inventario de consumibles..."))
             sincronizarCatalogo {
                 if (!isFinishing && !isDestroyed) {
@@ -1271,7 +1271,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
             return
         }
 
-        if (getCatalogo().isEmpty()) {
+        if (catalogoConsumiblesActual().isEmpty()) {
             root.addView(infoText("Sincronizando inventario de consumibles..."))
             sincronizarCatalogo {
                 if (!isFinishing && !isDestroyed) {
@@ -1283,6 +1283,27 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 }
             }
             return
+        }
+
+        val catalogoFormulario = catalogoConsumiblesActual()
+            .mapValues { (_, itemsMap) ->
+                itemsMap.mapValues { (_, refs) ->
+                    refs.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+                }
+            }
+        val catalogoFormularioHash = catalogoFormulario.hashCode()
+
+        fun getCatalogo() = catalogoFormulario
+
+        fun catalogoFormularioComoMapAny(): Map<String, Any> {
+            @Suppress("UNCHECKED_CAST")
+            return catalogoFormulario as Map<String, Any>
+        }
+
+        fun verificarCambioCatalogoConsumibles(origen: String) {
+            if (catalogoConsumiblesActual().hashCode() != catalogoFormularioHash) {
+                android.util.Log.d("BugConsumibles", "catalogo cambio mientras formulario activo origen=$origen")
+            }
         }
 
         val catSpinner = spinner(root, "Categoría *", getCatalogo().keys.filter { it.isNotBlank() }.sortedBy { normalizarBusqueda(it) })
@@ -1300,12 +1321,111 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         val codigoInterno = codigoInternoField(root, "Código interno", "Escribe o elige el código interno", scan = false)
         var codigoInternoSeleccionado = ""
         var stockDisponible = 0.0
+        var actualizandoSpinnerConsumibles = false
+        var categoriaSeleccionada = pCat
+        var itemSeleccionado = pItem
+        var referenciaSeleccionada = pRef
+
+        fun esPlaceholderConsumibles(valor: String): Boolean {
+            val normalizado = normalizarBusqueda(valor)
+            return valor.isBlank() ||
+                normalizado.startsWith("selecciona") ||
+                normalizado.startsWith("no-hay-items")
+        }
+
+        fun crearAdapterConsumibles(valores: List<String>): ArrayAdapter<String> {
+            return ArrayAdapter(this@showConsumiblesForm, android.R.layout.simple_spinner_item, valores).apply {
+                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+        }
+
+        fun seleccionarValorSiExiste(spinner: Spinner, valores: List<String>, valor: String): Boolean {
+            if (valor.isBlank()) return false
+            val pos = valores.indexOfFirst { it == valor || referenciasInventarioCoinciden(valor, it) }
+            if (pos < 0) return false
+            spinner.setSelection(pos, false)
+            return true
+        }
+
+        fun itemsConsumibles(categoria: String, origen: String): List<String> {
+            val catKey = claveCatalogoPorTexto(getCatalogo().keys, categoria)
+            val itemsMap = getCatalogo()[catKey] ?: mapOf()
+            val items = itemsMap.keys
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+                .sortedBy { normalizarBusqueda(it) }
+            android.util.Log.d("BugConsumibles", "categoria seleccionada=$categoria items=${items.size} origen=$origen")
+            return items.ifEmpty { listOf("No hay ítems disponibles para esta categoría") }
+        }
+
+        fun referenciasConsumibles(categoria: String, item: String, origen: String): List<String> {
+            val catKey = claveCatalogoPorTexto(getCatalogo().keys, categoria)
+            val itemsMap = getCatalogo()[catKey] ?: mapOf()
+            val itemKey = claveCatalogoPorTexto(itemsMap.keys, item)
+            val refs = (itemsMap[itemKey] ?: listOf())
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+            android.util.Log.d("BugConsumibles", "item seleccionado=$item refs=${refs.size} origen=$origen")
+            return refs.ifEmpty { listOf("N/A") }
+        }
+
+        fun actualizarReferenciasConsumibles(origen: String, preservar: Boolean = true) {
+            val categoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            val item = itemSeleccionado.ifBlank { itemSpinner.selectedItem?.toString().orEmpty() }
+            if (esPlaceholderConsumibles(item)) {
+                actualizandoSpinnerConsumibles = true
+                refSpinner.tag = "SINCRO"
+                refSpinner.adapter = crearAdapterConsumibles(listOf("N/A"))
+                refSpinner.setSelection(0, false)
+                referenciaSeleccionada = "N/A"
+                actualizandoSpinnerConsumibles = false
+                refSpinner.postDelayed({ if (refSpinner.tag == "SINCRO") refSpinner.tag = null }, 100)
+                android.util.Log.d("BugConsumibles", "referencias omitidas por item placeholder origen=$origen")
+                return
+            }
+
+            val refs = referenciasConsumibles(categoria, item, origen)
+            actualizandoSpinnerConsumibles = true
+            refSpinner.tag = "SINCRO"
+            refSpinner.adapter = crearAdapterConsumibles(refs)
+            val preservada = preservar && seleccionarValorSiExiste(refSpinner, refs, referenciaSeleccionada)
+            if (!preservada) {
+                refSpinner.setSelection(0, false)
+                referenciaSeleccionada = refs.firstOrNull().orEmpty()
+            } else {
+                referenciaSeleccionada = refSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerConsumibles = false
+            refSpinner.postDelayed({ if (refSpinner.tag == "SINCRO") refSpinner.tag = null }, 100)
+            android.util.Log.d("BugConsumibles", "referencia preservada=$preservada valor=$referenciaSeleccionada origen=$origen")
+        }
+
+        fun actualizarItemsConsumibles(origen: String, preservar: Boolean = true) {
+            val categoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            val items = itemsConsumibles(categoria, origen)
+            actualizandoSpinnerConsumibles = true
+            itemSpinner.tag = "SINCRO"
+            itemSpinner.adapter = crearAdapterConsumibles(items)
+            val preservado = preservar && seleccionarValorSiExiste(itemSpinner, items, itemSeleccionado)
+            if (!preservado) {
+                itemSpinner.setSelection(0, false)
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+                referenciaSeleccionada = ""
+            } else {
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+            }
+            actualizandoSpinnerConsumibles = false
+            itemSpinner.postDelayed({ if (itemSpinner.tag == "SINCRO") itemSpinner.tag = null }, 100)
+            android.util.Log.d("BugConsumibles", "item preservado=$preservado valor=$itemSeleccionado origen=$origen")
+            actualizarReferenciasConsumibles(origen, preservar = preservado)
+        }
 
         fun actualizarInfoStock() {
             val itemVal = itemSpinner.selectedItem?.toString() ?: ""
             val refVal = refSpinner.selectedItem?.toString() ?: ""
-            if (itemVal.isNotBlank() && !itemVal.startsWith("Selecciona") &&
-                refVal.isNotBlank() && !refVal.startsWith("Selecciona")) {
+            if (!esPlaceholderConsumibles(itemVal) && !esPlaceholderConsumibles(refVal)) {
 
                 stockLabel.text = "Consultando stock..."
                 stockLabel.setTextColor(verdeOscuro)
@@ -1336,7 +1456,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         setupCodigoInternoSalida(root, codigoInterno, "Consumibles") { producto ->
             codigoInternoSeleccionado = producto.codigoInterno
             stockDisponible = producto.cantidad
-            seleccionarProductoDesdeExistencia(producto, catSpinner, itemSpinner, refSpinner, getCatalogo() as Map<String, Any>) {
+            seleccionarProductoDesdeExistencia(producto, catSpinner, itemSpinner, refSpinner, catalogoFormularioComoMapAny()) {
                 val stockTxt = if (producto.unidad.isBlank()) "${producto.cantidad}" else "${producto.cantidad} ${producto.unidad}"
                 stockLabel.text = "Stock actual: $stockTxt"
                 stockLabel.setTextColor(if (producto.cantidad <= 0.0) Color.RED else verdeOscuro)
@@ -1344,7 +1464,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         }
 
         setupSearchBar(root, "Consumibles") { _, c, i, r ->
-            seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, getCatalogo() as Map<String, Any>, c, i, r) {
+            seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoFormularioComoMapAny(), c, i, r) {
                 autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", i, r) { producto ->
                     codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
                     if (producto != null) {
@@ -1368,7 +1488,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
             }
 
             producto?.let { p ->
-                seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, getCatalogo() as Map<String, Any>, p.categoria, p.item, p.referencia) {
+                seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoFormularioComoMapAny(), p.categoria, p.item, p.referencia) {
                     autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", p.item, p.referencia) { encontrado ->
                         codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
                         if (encontrado != null) {
@@ -1386,40 +1506,41 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
 
         catSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                val cat = catSpinner.selectedItem?.toString() ?: ""
-                @Suppress("UNCHECKED_CAST")
-                val catKey = claveCatalogoPorTexto(getCatalogo().keys, cat)
-                val itemsMap = (getCatalogo()[catKey] as? Map<String, Any>) ?: mapOf()
-                val items = itemsMap.keys
-                    .map { it.trim() }
-                    .filter { it.isNotBlank() }
-                    .distinct()
-                    .sortedBy { normalizarBusqueda(it) }
-                    .ifEmpty { listOf("Selecciona categoría") }
-                val adapter = ArrayAdapter(this@showConsumiblesForm, android.R.layout.simple_spinner_item, items)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                itemSpinner.adapter = adapter
+                if (actualizandoSpinnerConsumibles || catSpinner.tag == "SINCRO") {
+                    android.util.Log.d("BugConsumibles", "seleccion inicial categoria ignorada")
+                    return
+                }
+                verificarCambioCatalogoConsumibles("categoria")
+                categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty()
+                val itemActual = itemSpinner.selectedItem?.toString().orEmpty()
+                val refActual = refSpinner.selectedItem?.toString().orEmpty()
+                itemSeleccionado = if (!esPlaceholderConsumibles(itemActual)) itemActual else ""
+                referenciaSeleccionada = if (!esPlaceholderConsumibles(refActual)) refActual else ""
+                actualizarItemsConsumibles("categoria", preservar = true)
+                actualizarInfoStock()
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
 
         itemSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-                val cat = catSpinner.selectedItem?.toString() ?: ""
-                val itemKey = itemSpinner.selectedItem?.toString() ?: ""
-                @Suppress("UNCHECKED_CAST")
-                val catKey = claveCatalogoPorTexto(getCatalogo().keys, cat)
-                val itemsMap = (getCatalogo()[catKey] as? Map<String, Any>) ?: mapOf()
-                val itemCatalogoKey = claveCatalogoPorTexto(itemsMap.keys, itemKey)
-                val refs = ((itemsMap[itemCatalogoKey] as? List<*>)?.mapNotNull { it?.toString()?.trim() } ?: listOf())
-                    .filter { it.isNotBlank() }
-                    .distinct()
-                    .ifEmpty { listOf("Selecciona ítem") }
-                val adapter = ArrayAdapter(this@showConsumiblesForm, android.R.layout.simple_spinner_item, refs)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                refSpinner.adapter = adapter
+                if (actualizandoSpinnerConsumibles || itemSpinner.tag == "SINCRO") {
+                    android.util.Log.d("BugConsumibles", "seleccion inicial item ignorada")
+                    return
+                }
+                verificarCambioCatalogoConsumibles("item")
+                itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+                if (esPlaceholderConsumibles(itemSeleccionado)) {
+                    referenciaSeleccionada = ""
+                    actualizarReferenciasConsumibles("item-placeholder", preservar = false)
+                    actualizarInfoStock()
+                    return
+                }
+                val refActual = refSpinner.selectedItem?.toString().orEmpty()
+                referenciaSeleccionada = if (!esPlaceholderConsumibles(refActual)) refActual else referenciaSeleccionada
+                actualizarReferenciasConsumibles("item", preservar = true)
                 
-                // Si el usuario cambia manualmente el ítem, borramos el código previo
+                // Si el usuario cambia manualmente el item, borramos el codigo previo
                 if (itemSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
                     codigoInternoSeleccionado = ""
                     codigoInterno.setText("", false)
@@ -1431,12 +1552,18 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         
         refSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
+                if (actualizandoSpinnerConsumibles || refSpinner.tag == "SINCRO") {
+                    android.util.Log.d("BugConsumibles", "seleccion inicial referencia ignorada")
+                    return
+                }
+                verificarCambioCatalogoConsumibles("referencia")
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
-                if (itemVal.isNotBlank() && !itemVal.startsWith("Selecciona") &&
-                    refVal.isNotBlank() && !refVal.startsWith("Selecciona")) {
+                referenciaSeleccionada = refVal
+                android.util.Log.d("BugConsumibles", "referencia seleccionada=$referenciaSeleccionada")
+                if (!esPlaceholderConsumibles(itemVal) && !esPlaceholderConsumibles(refVal)) {
                     
-                    // Solo autocompletar si NO es una carga automática
+                    // Solo autocompletar si NO es una carga automatica
                     if (refSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
         autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", itemVal, refVal) { producto ->
             codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
@@ -1452,21 +1579,12 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
 
-        if (pCat.isNotBlank() && pItem.isNotBlank()) {
-            seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, getCatalogo() as Map<String, Any>, pCat, pItem, pRef) {
-                autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", pItem, pRef) { encontrado ->
-                    codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
-                    if (encontrado != null) {
-                        stockDisponible = encontrado.cantidad
-                        val stockTxt = if (encontrado.unidad.isBlank()) "${encontrado.cantidad}" else "${encontrado.cantidad} ${encontrado.unidad}"
-                        stockLabel.text = "Stock actual: $stockTxt\n${encontrado.item} · ${encontrado.referenciaCatalogo}"
-                        stockLabel.setTextColor(if (encontrado.cantidad <= 0.0) Color.RED else verdeOscuro)
-                    } else {
-                        actualizarInfoStock()
-                    }
-                }
-            }
-        }
+        categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty().ifBlank { categoriaSeleccionada }
+        val itemActualInicio = itemSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderConsumibles(itemActualInicio)) itemSeleccionado = itemActualInicio
+        val refActualInicio = refSpinner.selectedItem?.toString().orEmpty()
+        if (!esPlaceholderConsumibles(refActualInicio)) referenciaSeleccionada = refActualInicio
+        actualizarItemsConsumibles("inicio", preservar = true)
 
         val cantidad = field(root, "Cantidad *", "Ej: 2", number = true)
         cantidad.setText(pCant)
@@ -1501,7 +1619,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
             onEntrada = {
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
-                if (itemVal.isNotBlank() && !itemVal.startsWith("Selecciona")) {
+                if (!esPlaceholderConsumibles(itemVal)) {
                     showDialogEntradaStock("Consumibles", itemVal, refVal) { showConsumiblesForm(pItem, pCant, pSol, pLab) }
                 } else {
                     Toast.makeText(this, "Selecciona un producto primero", Toast.LENGTH_SHORT).show()
@@ -1516,8 +1634,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
             val itemVal = itemSpinner.selectedItem?.toString() ?: ""
             val refVal = refSpinner.selectedItem?.toString() ?: ""
             
-            if (itemVal.isBlank() || (itemVal.startsWith("Selecciona") || 
-                refVal.isBlank() || refVal.startsWith("Selecciona"))) {
+            if (esPlaceholderConsumibles(itemVal) || esPlaceholderConsumibles(refVal)) {
                 Toast.makeText(this, "Selecciona un producto válido", Toast.LENGTH_SHORT).show()
                 return@primaryButton
             }
