@@ -1974,22 +1974,87 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
     }
 
 internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
-        currentScreenRenderer = { showCombustibleForm(pItem, pCant, pSol, pCat, pRef) }
+        val tipos = listOf("Gasolina", "ACPM", "Urea")
+        var tipoSeleccionado = tipos.firstOrNull { it.equals(pCat, ignoreCase = true) } ?: "Gasolina"
+        currentScreenRenderer = {
+            showCombustibleForm(
+                pItem = pItem,
+                pCant = pCant,
+                pSol = pSol,
+                pCat = tipoSeleccionado,
+                pRef = pRef,
+            )
+        }
         val root = baseScreen("Salida de combustible", "Registra gasolina, ACPM o urea por maquinaria y solicitante.")
-        val tipo = spinner(root, "Tipo *", listOf("Gasolina", "ACPM", "Urea"))
+
+        val botonesTipo = linkedMapOf<String, Button>()
+        var alCambiarTipo: () -> Unit = {}
+
+        fun pintarBotonesTipo() {
+            botonesTipo.forEach { (nombre, boton) ->
+                val seleccionado = nombre == tipoSeleccionado
+                boton.text = if (seleccionado) "$nombre ✓" else nombre
+                boton.setTextColor(if (seleccionado) Color.WHITE else texto)
+                boton.background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(if (seleccionado) verdeOscuro else Color.WHITE)
+                    setStroke(dp(1), if (seleccionado) verdeOscuro else Color.rgb(190, 196, 192))
+                    cornerRadius = dp(12).toFloat()
+                }
+            }
+        }
+
+        fun seleccionarTipo(nuevoTipo: String) {
+            if (nuevoTipo == tipoSeleccionado) return
+            tipoSeleccionado = nuevoTipo
+            pintarBotonesTipo()
+            alCambiarTipo()
+        }
+
+        root.addView(TextView(this).apply {
+            text = "Tipo *"
+            textSize = 14f
+            setTextColor(texto)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, dp(8), 0, dp(4))
+        })
+
+        val selectorTipo = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = tipos.size.toFloat()
+            setPadding(0, 0, 0, dp(8))
+        }
+        tipos.forEachIndexed { index, nombre ->
+            val boton = secondaryButton(nombre) { seleccionarTipo(nombre) }.apply {
+                textSize = 13f
+                isAllCaps = false
+            }
+            botonesTipo[nombre] = boton
+            selectorTipo.addView(
+                boton,
+                LinearLayout.LayoutParams(0, dp(52), 1f).apply {
+                    setMargins(
+                        if (index == 0) 0 else dp(4),
+                        0,
+                        if (index == tipos.lastIndex) 0 else dp(4),
+                        0,
+                    )
+                },
+            )
+        }
+        root.addView(selectorTipo)
+        pintarBotonesTipo()
 
         val stockResumen = stockInfoCard("Stock actual: consultando...")
         root.addView(stockResumen)
         val stockPorTipo = mutableMapOf<String, Double>()
 
         fun pintarStockCombustible() {
-            val tipoVal = tipo.selectedItem?.toString().orEmpty()
             stockResumen.renderStockSummary(
                 title = "Stock actual",
-                lines = tiposCombustible().map { tipo ->
-                    tipo to "${cantidadGalonesLegible(stockPorTipo[tipo] ?: 0.0)} gal"
+                lines = tiposCombustible().map { combustible ->
+                    combustible to "${cantidadGalonesLegible(stockPorTipo[combustible] ?: 0.0)} gal"
                 },
-                highlightKey = tipoVal,
+                highlightKey = tipoSeleccionado,
             )
         }
 
@@ -2005,19 +2070,35 @@ internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String 
                 stockResumen.setTextColor(Color.rgb(180, 40, 40))
             })
         }
-
-        tipo.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                if (stockPorTipo.isNotEmpty()) pintarStockCombustible()
-            }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-        }
         actualizarStockCombustible()
 
         val cantidad = field(root, "Cantidad *", "Ej: 5", number = true)
         cantidad.setText(pCant)
         val unidad = spinner(root, "Unidad", listOf("Galones"))
-        val horometro = field(root, "Horómetro", "Opcional", number = true)
+
+        val contenedorHorometro = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val horometro = field(contenedorHorometro, "Horómetro", "Opcional", number = true)
+        root.addView(
+            contenedorHorometro,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+
+        fun actualizarVisibilidadHorometro() {
+            val mostrarHorometro = tipoSeleccionado == "ACPM"
+            contenedorHorometro.visibility = if (mostrarHorometro) View.VISIBLE else View.GONE
+            if (!mostrarHorometro) horometro.setText("")
+        }
+
+        alCambiarTipo = {
+            actualizarVisibilidadHorometro()
+            if (stockPorTipo.isNotEmpty()) pintarStockCombustible()
+        }
+        actualizarVisibilidadHorometro()
         
         // Sugerencias para maquinaria/equipo
         val equiposExistentes = listOf("Tractor", "Guadaña", "Bomba Espalda", "Camioneta", "Motosierra", "Planta Eléctrica")
@@ -2045,18 +2126,26 @@ internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String 
 
         root.addView(gestionNuevoEntradaRow(
             onNuevo = {
-                val tipoVal = tipo.selectedItem?.toString() ?: ""
-                showDialogNuevoCombustible(tipoVal) {
+                showDialogNuevoCombustible(tipoSeleccionado) {
                     actualizarStockCombustible()
-                    showCombustibleForm(pItem, pCant, pSol)
+                    showCombustibleForm(
+                        pItem = pItem,
+                        pCant = pCant,
+                        pSol = pSol,
+                        pCat = tipoSeleccionado,
+                    )
                 }
             },
             onEntrada = {
-                val tipoVal = tipo.selectedItem?.toString() ?: ""
-                if (tipoVal.isNotBlank() && !tipoVal.startsWith("Selecciona")) {
-                    showDialogEntradaStock("Combustible", tipoVal, "N/A") {
+                if (tipoSeleccionado.isNotBlank()) {
+                    showDialogEntradaStock("Combustible", tipoSeleccionado, "N/A") {
                         actualizarStockCombustible()
-                        showCombustibleForm(pItem, pCant, pSol)
+                        showCombustibleForm(
+                            pItem = pItem,
+                            pCant = pCant,
+                            pSol = pSol,
+                            pCat = tipoSeleccionado,
+                        )
                     }
                 } else {
                     Toast.makeText(this, "Selecciona el tipo de combustible primero", Toast.LENGTH_SHORT).show()
@@ -2067,8 +2156,7 @@ internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String 
         root.addView(primaryButton("Guardar salida") {
             if (!required(cantidad, maquinaria, solicitante)) return@primaryButton
             
-            val tipoVal = tipo.selectedItem?.toString() ?: ""
-            if (tipoVal.isBlank()) {
+            if (tipoSeleccionado.isBlank()) {
                 Toast.makeText(this, "Selecciona el tipo de combustible", Toast.LENGTH_SHORT).show()
                 return@primaryButton
             }
@@ -2080,13 +2168,13 @@ internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String 
                 fecha = now(),
                 modulo = "Combustible",
                 tipoMovimiento = "Salida",
-                item = tipoVal,
+                item = tipoSeleccionado,
                 cantidad = cantidad.text.toString(),
                 unidad = uniVal,
                 solicitante = solicitante.text.toString(),
                 labor = labor.text.toString(),
                 maquinaria = maquinaria.text.toString(),
-                horometro = horometro.text.toString(),
+                horometro = if (tipoSeleccionado == "ACPM") horometro.text.toString() else "",
                 observaciones = observaciones.text.toString()
             )
 
