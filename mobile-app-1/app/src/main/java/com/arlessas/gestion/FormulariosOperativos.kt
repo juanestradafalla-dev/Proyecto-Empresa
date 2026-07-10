@@ -26,6 +26,7 @@ import com.google.gson.reflect.TypeToken
 // Mantiene el comportamiento original, pero separa responsabilidades para facilitar mantenimiento.
 
 private const val BUG_SPINNERS_TAG = "BugSpinners"
+private const val BUG_STOCK_EPP_TAG = "BugStockEPP"
 
 private fun esPlaceholderSpinnerDependiente(valor: String): Boolean {
     val normalizado = normalizarBusqueda(valor)
@@ -898,30 +899,46 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
 
         fun mostrarStock(producto: ExistenciaProducto?) {
             if (producto == null) {
-                stockDisponible.text = "Disponible: sin stock registrado para esta seleccion"
+                android.util.Log.d(BUG_STOCK_EPP_TAG, "stock registros=0 stock=0 unidad=UNIDAD")
+                stockDisponible.text = "Disponible: 0 UNIDAD"
                 stockDisponible.setTextColor(Color.rgb(160, 80, 0))
                 return
             }
             val unidad = producto.unidad.ifBlank { "Unidad" }
             val referencia = producto.referenciaCatalogo.ifBlank { producto.referencia }
             val detalle = listOf(producto.codigoInterno, producto.item, referencia).filter { it.isNotBlank() }.joinToString(" - ")
+            android.util.Log.d(BUG_STOCK_EPP_TAG, "stock registros=1 stock=${producto.cantidad} unidad=$unidad codigo=${producto.codigoInterno}")
             stockDisponible.text = "Disponible: ${cantidadLegible(producto.cantidad)} $unidad\n$detalle"
             stockDisponible.setTextColor(if (producto.cantidad > 0.0) verdeOscuro else Color.rgb(180, 40, 40))
         }
 
         fun actualizarStockEpp(codigoPreferido: String = "") {
             val consulta = ++stockConsultaActual
-            val codigo = normalizarCodigoInterno(codigoPreferido.ifBlank { codigoInterno.text?.toString().orEmpty() })
+            val codigoCampo = normalizarCodigoInterno(codigoInterno.text?.toString().orEmpty())
             val itemVal = itemSpinner.selectedItem?.toString()?.takeUnless { esPlaceholderSpinnerDependiente(it) }.orEmpty()
             val refVal = refSpinner.selectedItem?.toString()?.takeUnless { esPlaceholderSpinnerDependiente(it) }.orEmpty()
+            val categoriaVal = catSpinner.selectedItem?.toString().orEmpty()
+            val codigo = normalizarCodigoInterno(codigoPreferido).ifBlank {
+                if (itemVal.isBlank() || refVal.isBlank()) codigoCampo else ""
+            }
+            android.util.Log.d(
+                BUG_STOCK_EPP_TAG,
+                "consulta categoria=$categoriaVal item=$itemVal referencia=$refVal codigo=$codigo codigoSeleccionado=$codigoInternoSeleccionado"
+            )
             stockDisponible.text = "Disponible: consultando..."
             stockDisponible.setTextColor(gris)
 
             if (codigo.isNotBlank()) {
                 buscarExistenciaPorCodigoInterno(codigo, "EPP", { producto ->
-                    if (consulta == stockConsultaActual) mostrarStock(producto)
+                    if (consulta == stockConsultaActual) {
+                        if (producto == null) {
+                            android.util.Log.d(BUG_STOCK_EPP_TAG, "sin coincidencias por codigo=$codigo categoria=$categoriaVal item=$itemVal referencia=$refVal")
+                        }
+                        mostrarStock(producto)
+                    }
                 }, {
                     if (consulta == stockConsultaActual) {
+                        android.util.Log.d(BUG_STOCK_EPP_TAG, "fallo consulta codigo=$codigo error=${it.localizedMessage ?: "desconocido"}")
                         stockDisponible.text = "Disponible: no se pudo consultar Firestore"
                         stockDisponible.setTextColor(Color.rgb(180, 40, 40))
                     }
@@ -930,15 +947,22 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             }
 
             if (itemVal.isBlank() || refVal.isBlank()) {
+                android.util.Log.d(BUG_STOCK_EPP_TAG, "sin coincidencias filtros incompletos categoria=$categoriaVal item=$itemVal referencia=$refVal codigo=$codigoCampo")
                 stockDisponible.text = "Disponible: selecciona un item para consultar stock"
                 stockDisponible.setTextColor(gris)
                 return
             }
 
             buscarExistenciaPorProducto("EPP", itemVal, refVal, { producto ->
-                if (consulta == stockConsultaActual) mostrarStock(producto)
+                if (consulta == stockConsultaActual) {
+                    if (producto == null) {
+                        android.util.Log.d(BUG_STOCK_EPP_TAG, "sin coincidencias categoria=$categoriaVal item=$itemVal referencia=$refVal")
+                    }
+                    mostrarStock(producto)
+                }
             }, {
                 if (consulta == stockConsultaActual) {
+                    android.util.Log.d(BUG_STOCK_EPP_TAG, "fallo consulta categoria=$categoriaVal item=$itemVal referencia=$refVal error=${it.localizedMessage ?: "desconocido"}")
                     stockDisponible.text = "Disponible: no se pudo consultar Firestore"
                     stockDisponible.setTextColor(Color.rgb(180, 40, 40))
                 }
@@ -947,6 +971,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
 
         setupCodigoInternoSalida(root, codigoInterno, "EPP") { producto ->
             codigoInternoSeleccionado = producto.codigoInterno
+            android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado item=${producto.item} referencia=${producto.referenciaCatalogo}")
             seleccionarProductoDesdeExistencia(producto, catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny())
             mostrarStock(producto)
         }
@@ -955,6 +980,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny(), c, i, r) {
                 autocompletarCodigoDesdeProducto(codigoInterno, "EPP", i, r) { producto ->
                     codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
+                    android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado item=$i referencia=$r")
                     mostrarStock(producto)
                 }
             }
@@ -964,6 +990,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny(), pCat, pItem, pRef) {
                 autocompletarCodigoDesdeProducto(codigoInterno, "EPP", pItem, pRef) { encontrado ->
                     codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
+                    android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado item=$pItem referencia=$pRef")
                     mostrarStock(encontrado)
                 }
             }
@@ -980,7 +1007,11 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                 val refActual = refSpinner.selectedItem?.toString().orEmpty()
                 itemSeleccionado = if (!esPlaceholderSpinnerDependiente(itemActual)) itemActual else ""
                 referenciaSeleccionada = if (!esPlaceholderSpinnerDependiente(refActual)) refActual else ""
+                android.util.Log.d(BUG_STOCK_EPP_TAG, "categoria seleccionada=$categoriaSeleccionada")
                 actualizarItemsEpp("categoria", preservar = true)
+                codigoInternoSeleccionado = ""
+                codigoInterno.setText("", false)
+                actualizarStockEpp()
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
@@ -994,6 +1025,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                 itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
                 val refActual = refSpinner.selectedItem?.toString().orEmpty()
                 referenciaSeleccionada = if (!esPlaceholderSpinnerDependiente(refActual)) refActual else referenciaSeleccionada
+                android.util.Log.d(BUG_STOCK_EPP_TAG, "item seleccionado=$itemSeleccionado")
                 actualizarReferenciasEpp("item", preservar = true)
                 
                 // Limpieza de código previo si es manual
@@ -1001,6 +1033,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                     codigoInternoSeleccionado = ""
                     codigoInterno.setText("", false)
                 }
+                actualizarStockEpp()
             }
             override fun onNothingSelected(p0: android.widget.AdapterView<*>?) {}
         }
@@ -1014,9 +1047,11 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
                 referenciaSeleccionada = refVal
+                android.util.Log.d(BUG_STOCK_EPP_TAG, "tallaReferencia seleccionada=$referenciaSeleccionada item=$itemVal")
                 if (!esPlaceholderSpinnerDependiente(itemVal) && !esPlaceholderSpinnerDependiente(refVal)) {
                     autocompletarCodigoDesdeProducto(codigoInterno, "EPP", itemVal, refVal) { producto ->
                         codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
+                        android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado")
                         mostrarStock(producto)
                     }
                 } else {
@@ -1032,6 +1067,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         val refInicio = refSpinner.selectedItem?.toString().orEmpty()
         if (!esPlaceholderSpinnerDependiente(refInicio)) referenciaSeleccionada = refInicio
         actualizarItemsEpp("inicio", preservar = true)
+        actualizarStockEpp()
 
         val cantidad = field(root, "Cantidad *", "Ej: 1", number = true)
         cantidad.setText(pCant.ifBlank { "1" })
