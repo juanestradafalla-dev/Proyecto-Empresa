@@ -192,8 +192,7 @@ internal fun MainActivity.showAseoFormMultipleInterno(
     var tokenStockVerificado = ""
     var consultaStockActual = 0
     var eventosSpinnerActivos = false
-    var botonesListos = false
-    lateinit var btnEntrada: Button
+    var vistaEntrada: View? = null
 
     fun escribirCodigoSinBusqueda(codigo: String) {
         val actual = normalizarCodigoInterno(codigoInterno.text?.toString().orEmpty())
@@ -237,9 +236,11 @@ internal fun MainActivity.showAseoFormMultipleInterno(
             else -> "$detalle\nTotal: ${cantidadTexto(total)} $unidad"
         }
         stockLabel.setTextColor(if ((ubicacionSeleccionada?.cantidad ?: total) <= 0.0) Color.RED else verdeOscuro)
-        if (!botonesListos) return
-        btnEntrada.isEnabled = ubicacionSeleccionada != null
-        btnEntrada.alpha = if (btnEntrada.isEnabled) 1f else 0.55f
+        vistaEntrada?.let { vista ->
+            val habilitada = ubicacionSeleccionada != null
+            vista.isEnabled = habilitada
+            vista.alpha = if (habilitada) 1f else 0.55f
+        }
     }
 
     fun seleccionarUbicacion(opcion: AseoUbicacionStock?, token: String = tokenSeleccion()) {
@@ -505,10 +506,7 @@ internal fun MainActivity.showAseoFormMultipleInterno(
             }
         },
     )
-    btnEntrada = gestionAcciones.getChildAt(1) as Button
-    btnEntrada.isEnabled = false
-    btnEntrada.alpha = 0.55f
-    botonesListos = true
+    vistaEntrada = gestionAcciones.getChildAt(1)
     root.addView(gestionAcciones)
     actualizarResumen()
 
