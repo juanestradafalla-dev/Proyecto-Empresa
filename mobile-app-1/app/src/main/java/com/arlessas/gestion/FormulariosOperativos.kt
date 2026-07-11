@@ -1532,6 +1532,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             stockDisponible.text = "Disponible: selecciona un item para consultar stock"
             stockDisponible.setTextColor(gris)
             guardarDraftEpp()
+            actualizarStockEpp()
         }
 
         botonAgregar = primaryButton("Agregar a la entrega") {
@@ -1680,6 +1681,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                     )
                     .setPositiveButton("Sí, registrar todos") { _, _ -> continuarRegistro() }
                     .setNegativeButton("No, cancelar") { _, _ -> finalizarBloqueo() }
+                    .setOnCancelListener { finalizarBloqueo() }
                     .show()
             } else {
                 continuarRegistro()
