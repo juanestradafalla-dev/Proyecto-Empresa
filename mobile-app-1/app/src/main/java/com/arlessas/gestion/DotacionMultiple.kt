@@ -244,6 +244,20 @@ internal fun MainActivity.showDotacionForm(
             referenciasInventarioCoinciden(tallaSpinner.selectedItem?.toString().orEmpty(), referenciaProducto)
     }
 
+    fun escribirCodigoInternoSinBusqueda(codigo: String) {
+        val codigoActual = normalizarCodigoInterno(codigoInterno.text?.toString().orEmpty())
+        val codigoNuevo = normalizarCodigoInterno(codigo)
+        if (codigoActual == codigoNuevo) return
+
+        codigoInterno.tag = "auto_fill"
+        try {
+            codigoInterno.setText(codigo, false)
+            codigoInterno.setSelection(codigoInterno.text?.length ?: 0)
+        } finally {
+            codigoInterno.tag = null
+        }
+    }
+
     fun mostrarStock(producto: ExistenciaProducto?, consulta: Int, token: String) {
         if (consulta != consultaStockActual || token != tokenSeleccion()) return
         if (producto == null || producto.documentoId.isBlank() || !productoCoincide(producto)) {
@@ -258,9 +272,7 @@ internal fun MainActivity.showDotacionForm(
         stockDisponibleValor = producto.cantidad
         stockVerificado = true
         tokenVerificado = token
-        codigoInterno.tag = "SINCRO"
-        codigoInterno.setText(producto.codigoInterno, false)
-        codigoInterno.post { if (codigoInterno.tag == "SINCRO") codigoInterno.tag = null }
+        escribirCodigoInternoSinBusqueda(producto.codigoInterno)
         val referencia = producto.referenciaCatalogo.ifBlank { producto.referencia }
         val detalle = listOf(producto.codigoInterno, producto.item, referencia).filter { it.isNotBlank() }.joinToString(" - ")
         stockDisponible.text = "Disponible: ${cantidadDotacionLegible(producto.cantidad)} Unidad\n$detalle"
@@ -562,7 +574,7 @@ internal fun MainActivity.showDotacionForm(
         ) {
             codigoSeleccionado = linea.codigoInterno
             documentoSeleccionado = linea.documentoId
-            codigoInterno.setText(linea.codigoInterno, false)
+            escribirCodigoInternoSinBusqueda(linea.codigoInterno)
             actualizarStock(linea.documentoId)
         }
         cantidad.setText(linea.cantidad.toString())
