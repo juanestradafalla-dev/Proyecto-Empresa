@@ -485,7 +485,7 @@ private fun MainActivity.showDotacionFormIndividualLegacy(pItem: String = "", pC
     }
 
 internal fun MainActivity.showQuimicoForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
-        showQuimicoInventarioForm(ModulosInventario.AGROQUIMICOS, pItem, pCant, pSol, pCat, pRef)
+        showAgroquimicosMultipleInterno(pItem, pCant, pSol, pCat, pRef)
     }
 
 internal fun MainActivity.showLubricantesTallerForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
