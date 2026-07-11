@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.SetOptions
 import java.text.SimpleDateFormat
 import java.text.Normalizer
@@ -27,6 +28,55 @@ import com.google.gson.reflect.TypeToken
 
 private const val BUG_SPINNERS_TAG = "BugSpinners"
 private const val BUG_STOCK_EPP_TAG = "BugStockEPP"
+
+private data class ConsumibleEntregaLinea(
+    val id: Long = System.nanoTime(),
+    val categoria: String,
+    val item: String,
+    val referencia: String,
+    val codigoInterno: String,
+    val documentoId: String,
+    val cantidad: Double,
+    val unidad: String,
+    val stockDisponible: Double,
+    val unidadStock: String,
+    val ubicacion: String = "",
+) {
+    fun clave(): String = listOf(
+        normalizarBusqueda(categoria),
+        normalizarBusqueda(item),
+        normalizarBusqueda(referencia),
+        normalizarCodigoInternoSinActividad(codigoInterno.ifBlank { documentoId }),
+    ).joinToString("|")
+}
+
+private data class ConsumibleDocumentoResuelto(
+    val linea: ConsumibleEntregaLinea,
+    val doc: DocumentSnapshot,
+)
+
+private val consumiblesEntregaLineas = mutableListOf<ConsumibleEntregaLinea>()
+private var consumiblesEntregaEditandoId: Long? = null
+private var consumiblesEntregaProcesando = false
+private var consumiblesDraftCategoria = ""
+private var consumiblesDraftItem = ""
+private var consumiblesDraftReferencia = ""
+private var consumiblesDraftCantidad = ""
+private var consumiblesDraftSolicitante = ""
+private var consumiblesDraftLabor = ""
+private var consumiblesDraftObservaciones = ""
+private var consumiblesDraftUrlEvidencia = ""
+private var consumiblesDraftUriEvidencia = ""
+
+private fun normalizarCodigoInternoSinActividad(valor: String): String {
+    val limpio = valor.trim().uppercase(Locale.getDefault())
+    return limpio.replace(Regex("[^A-Z0-9]+"), "")
+}
+
+private fun cantidadConsumibleLegible(valor: Double): String {
+    return if (valor % 1.0 == 0.0) valor.toLong().toString()
+    else String.format(Locale.getDefault(), "%.2f", valor).trimEnd('0').trimEnd(',', '.')
+}
 
 private fun esPlaceholderSpinnerDependiente(valor: String): Boolean {
     val normalizado = normalizarBusqueda(valor)
@@ -1543,7 +1593,23 @@ private fun MainActivity.showAseoFormInterno(pItem: String = "", pCant: String =
     }
 
 internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String = "", pSol: String = "", pLab: String = "", pCat: String = "", pRef: String = "", catalogoRefrescado: Boolean = false) {
-        currentScreenRenderer = { showConsumiblesForm(pItem, pCant, pSol, pLab, pCat, pRef, catalogoRefrescado = true) }
+        if (pCat.isNotBlank()) consumiblesDraftCategoria = pCat
+        if (pItem.isNotBlank()) consumiblesDraftItem = pItem
+        if (pRef.isNotBlank()) consumiblesDraftReferencia = pRef
+        if (pCant.isNotBlank()) consumiblesDraftCantidad = pCant
+        if (pSol.isNotBlank()) consumiblesDraftSolicitante = pSol
+        if (pLab.isNotBlank()) consumiblesDraftLabor = pLab
+        currentScreenRenderer = {
+            showConsumiblesForm(
+                pItem = consumiblesDraftItem,
+                pCant = consumiblesDraftCantidad,
+                pSol = consumiblesDraftSolicitante,
+                pLab = consumiblesDraftLabor,
+                pCat = consumiblesDraftCategoria,
+                pRef = consumiblesDraftReferencia,
+                catalogoRefrescado = true,
+            )
+        }
         val root = baseScreen("Salida de consumibles", "Registra materiales de uso diario: repuestos, ferretería, aseo y más.")
         
         fun catalogoConsumiblesActual() = catalogoCargado["Consumibles"] ?: mapOf()
@@ -1607,11 +1673,15 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
 
         val codigoInterno = codigoInternoField(root, "Código interno", "Escribe o elige el código interno", scan = false)
         var codigoInternoSeleccionado = ""
+        var documentoExistenciaSeleccionado = ""
         var stockDisponible = 0.0
+        var unidadStockSeleccionada = "Unidad"
+        var stockVerificado = false
+        var stockConsultaActual = 0
         var actualizandoSpinnerConsumibles = false
-        var categoriaSeleccionada = pCat
-        var itemSeleccionado = pItem
-        var referenciaSeleccionada = pRef
+        var categoriaSeleccionada = pCat.ifBlank { consumiblesDraftCategoria }
+        var itemSeleccionado = pItem.ifBlank { consumiblesDraftItem }
+        var referenciaSeleccionada = pRef.ifBlank { consumiblesDraftReferencia }
 
         fun esPlaceholderConsumibles(valor: String): Boolean {
             val normalizado = normalizarBusqueda(valor)
@@ -1710,39 +1780,67 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         }
 
         fun actualizarInfoStock() {
+            val consulta = ++stockConsultaActual
             val itemVal = itemSpinner.selectedItem?.toString() ?: ""
             val refVal = refSpinner.selectedItem?.toString() ?: ""
             if (!esPlaceholderConsumibles(itemVal) && !esPlaceholderConsumibles(refVal)) {
 
                 stockLabel.text = "Consultando stock..."
                 stockLabel.setTextColor(verdeOscuro)
+                stockVerificado = false
 
                 val codigoValido = if (codigoInterno.text.toString().isNotBlank()) codigoInternoSeleccionado else ""
                 val consultaItem = codigoValido.ifBlank { itemVal }
                 
                 consultarStockExistencia(consultaItem, refVal, { cant, unidadStock, productoVisible ->
+                    if (consulta != stockConsultaActual) return@consultarStockExistencia
                     if (codigoValido.isNotBlank() && !productoVisible.lowercase().contains(itemVal.lowercase())) {
                         consultarStockExistencia(itemVal, refVal, { c2, u2, _ ->
+                            if (consulta != stockConsultaActual) return@consultarStockExistencia
                             stockDisponible = c2
+                            unidadStockSeleccionada = u2.ifBlank { "Unidad" }
+                            stockVerificado = true
                             stockLabel.text = "Stock actual: $c2 $u2"
                             stockLabel.setTextColor(if (c2 <= 0) Color.RED else verdeOscuro)
-                        }, {})
+                        }, {
+                            if (consulta != stockConsultaActual) return@consultarStockExistencia
+                            stockDisponible = 0.0
+                            unidadStockSeleccionada = "Unidad"
+                            stockVerificado = false
+                            stockLabel.text = "Stock no disponible"
+                            stockLabel.setTextColor(Color.RED)
+                        })
                         return@consultarStockExistencia
                     }
                     
                     stockDisponible = cant
+                    unidadStockSeleccionada = unidadStock.ifBlank { "Unidad" }
+                    stockVerificado = true
                     stockLabel.text = "Stock actual: $cant $unidadStock"
                     stockLabel.setTextColor(if (cant <= 0) Color.RED else verdeOscuro)
                 }, {
+                    if (consulta != stockConsultaActual) return@consultarStockExistencia
                     stockLabel.text = "Stock no disponible (offline)"
-                    stockDisponible = 999999.0
+                    stockDisponible = 0.0
+                    unidadStockSeleccionada = "Unidad"
+                    stockVerificado = false
                 })
+            } else {
+                stockDisponible = 0.0
+                unidadStockSeleccionada = "Unidad"
+                stockVerificado = false
+                stockLabel.text = "Selecciona un producto para ver stock"
+                stockLabel.setTextColor(verdeOscuro)
             }
         }
         
         setupCodigoInternoSalida(root, codigoInterno, "Consumibles") { producto ->
+            stockConsultaActual++
             codigoInternoSeleccionado = producto.codigoInterno
+            documentoExistenciaSeleccionado = producto.documentoId
             stockDisponible = producto.cantidad
+            unidadStockSeleccionada = producto.unidad.ifBlank { "Unidad" }
+            stockVerificado = true
             seleccionarProductoDesdeExistencia(producto, catSpinner, itemSpinner, refSpinner, catalogoFormularioComoMapAny()) {
                 val stockTxt = if (producto.unidad.isBlank()) "${producto.cantidad}" else "${producto.cantidad} ${producto.unidad}"
                 stockLabel.text = "Stock actual: $stockTxt"
@@ -1755,11 +1853,16 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", i, r) { producto ->
                     codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
                     if (producto != null) {
+                        stockConsultaActual++
+                        documentoExistenciaSeleccionado = producto.documentoId
                         stockDisponible = producto.cantidad
+                        unidadStockSeleccionada = producto.unidad.ifBlank { "Unidad" }
+                        stockVerificado = true
                         val stockTxt = if (producto.unidad.isBlank()) "${producto.cantidad}" else "${producto.cantidad} ${producto.unidad}"
                         stockLabel.text = "Stock actual: $stockTxt\n${producto.item} · ${producto.referenciaCatalogo}"
                         stockLabel.setTextColor(if (producto.cantidad <= 0.0) Color.RED else verdeOscuro)
                     } else {
+                        documentoExistenciaSeleccionado = ""
                         actualizarInfoStock()
                     }
                 }
@@ -1779,11 +1882,16 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                     autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", p.item, p.referencia) { encontrado ->
                         codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
                         if (encontrado != null) {
+                            stockConsultaActual++
+                            documentoExistenciaSeleccionado = encontrado.documentoId
                             stockDisponible = encontrado.cantidad
+                            unidadStockSeleccionada = encontrado.unidad.ifBlank { "Unidad" }
+                            stockVerificado = true
                             val stockTxt = if (encontrado.unidad.isBlank()) "${encontrado.cantidad}" else "${encontrado.cantidad} ${encontrado.unidad}"
                             stockLabel.text = "Stock actual: $stockTxt\n${encontrado.item} · ${encontrado.referenciaCatalogo}"
                             stockLabel.setTextColor(if (encontrado.cantidad <= 0.0) Color.RED else verdeOscuro)
                         } else {
+                            documentoExistenciaSeleccionado = ""
                             actualizarInfoStock()
                         }
                     }
@@ -1799,10 +1907,13 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 }
                 verificarCambioCatalogoConsumibles("categoria")
                 categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty()
+                consumiblesDraftCategoria = categoriaSeleccionada
                 val itemActual = itemSpinner.selectedItem?.toString().orEmpty()
                 val refActual = refSpinner.selectedItem?.toString().orEmpty()
                 itemSeleccionado = if (!esPlaceholderConsumibles(itemActual)) itemActual else ""
                 referenciaSeleccionada = if (!esPlaceholderConsumibles(refActual)) refActual else ""
+                consumiblesDraftItem = itemSeleccionado
+                consumiblesDraftReferencia = referenciaSeleccionada
                 actualizarItemsConsumibles("categoria", preservar = true)
                 actualizarInfoStock()
             }
@@ -1817,19 +1928,23 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 }
                 verificarCambioCatalogoConsumibles("item")
                 itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+                consumiblesDraftItem = if (!esPlaceholderConsumibles(itemSeleccionado)) itemSeleccionado else ""
                 if (esPlaceholderConsumibles(itemSeleccionado)) {
                     referenciaSeleccionada = ""
+                    consumiblesDraftReferencia = ""
                     actualizarReferenciasConsumibles("item-placeholder", preservar = false)
                     actualizarInfoStock()
                     return
                 }
                 val refActual = refSpinner.selectedItem?.toString().orEmpty()
                 referenciaSeleccionada = if (!esPlaceholderConsumibles(refActual)) refActual else referenciaSeleccionada
+                consumiblesDraftReferencia = referenciaSeleccionada
                 actualizarReferenciasConsumibles("item", preservar = true)
                 
                 // Si el usuario cambia manualmente el item, borramos el codigo previo
                 if (itemSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
                     codigoInternoSeleccionado = ""
+                    documentoExistenciaSeleccionado = ""
                     codigoInterno.setText("", false)
                 }
                 actualizarInfoStock()
@@ -1847,6 +1962,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
                 referenciaSeleccionada = refVal
+                consumiblesDraftReferencia = if (!esPlaceholderConsumibles(refVal)) refVal else ""
                 android.util.Log.d("BugConsumibles", "referencia seleccionada=$referenciaSeleccionada")
                 if (!esPlaceholderConsumibles(itemVal) && !esPlaceholderConsumibles(refVal)) {
                     
@@ -1854,6 +1970,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                     if (refSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
         autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", itemVal, refVal) { producto ->
             codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
+            documentoExistenciaSeleccionado = producto?.documentoId.orEmpty()
             actualizarInfoStock()
         }
                     } else {
@@ -1874,104 +1991,601 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         actualizarItemsConsumibles("inicio", preservar = true)
 
         val cantidad = field(root, "Cantidad *", "Ej: 2", number = true)
-        cantidad.setText(pCant)
+        cantidad.setText(pCant.ifBlank { consumiblesDraftCantidad })
         val unidad = spinner(root, "Unidad", listOf("Unidad", "Kg", "Litro", "Metro", "Caja", "Paquete", "Galón"))
         val solicitante = field(root, "Solicitante *", "Nombre de quien solicita")
-        solicitante.setText(pSol)
+        solicitante.setText(pSol.ifBlank { consumiblesDraftSolicitante })
         val labor = field(root, "Labor / destino *", "Ej: limpieza bodega, vivero, mantenimiento")
-        labor.setText(pLab)
+        labor.setText(pLab.ifBlank { consumiblesDraftLabor })
         val observaciones = field(root, "Observaciones", "Opcional")
-        var urlEvidencia = ""
-        var uriLocalEvidencia = ""
+        observaciones.setText(consumiblesDraftObservaciones)
+        var urlEvidencia = consumiblesDraftUrlEvidencia
+        var uriLocalEvidencia = consumiblesDraftUriEvidencia
+
+        fun guardarDraftConsumibles() {
+            consumiblesDraftCategoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            consumiblesDraftItem = itemSeleccionado.ifBlank { itemSpinner.selectedItem?.toString().orEmpty() }
+                .takeUnless { esPlaceholderConsumibles(it) }.orEmpty()
+            consumiblesDraftReferencia = referenciaSeleccionada.ifBlank { refSpinner.selectedItem?.toString().orEmpty() }
+                .takeUnless { esPlaceholderConsumibles(it) }.orEmpty()
+            consumiblesDraftCantidad = cantidad.text.toString()
+            consumiblesDraftSolicitante = solicitante.text.toString()
+            consumiblesDraftLabor = labor.text.toString()
+            consumiblesDraftObservaciones = observaciones.text.toString()
+            consumiblesDraftUrlEvidencia = urlEvidencia
+            consumiblesDraftUriEvidencia = uriLocalEvidencia
+        }
+
+        fun observarDraft(campo: android.widget.EditText, accion: (String) -> Unit) {
+            campo.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    accion(s?.toString().orEmpty())
+                }
+            })
+        }
+
+        observarDraft(cantidad) { consumiblesDraftCantidad = it }
+        observarDraft(solicitante) { consumiblesDraftSolicitante = it }
+        observarDraft(labor) { consumiblesDraftLabor = it }
+        observarDraft(observaciones) { consumiblesDraftObservaciones = it }
 
         root.addView(evidenceButton {
             capturarEvidencia { uri ->
                 uriLocalEvidencia = uri
+                consumiblesDraftUriEvidencia = uri
                 mostrarPrevisualizacionEvidencia(root, uri) {
                     uriLocalEvidencia = ""
                     urlEvidencia = ""
+                    consumiblesDraftUriEvidencia = ""
+                    consumiblesDraftUrlEvidencia = ""
                 }
                 if (isNetworkAvailable()) {
-                    subirEvidenciaCloud(uri, "consumibles") { url -> urlEvidencia = url }
+                    subirEvidenciaCloud(uri, "consumibles") { url ->
+                        urlEvidencia = url
+                        consumiblesDraftUrlEvidencia = url
+                    }
                 }
             }
         })
 
         root.addView(gestionNuevoEntradaRow(
             onNuevo = {
+                guardarDraftConsumibles()
                 showDialogNuevoProducto("Consumibles") { c, i, r ->
-                    showConsumiblesForm(pItem = i, pCant = pCant, pSol = pSol, pLab = pLab, pCat = c, pRef = r)
+                    showConsumiblesForm(
+                        pItem = i,
+                        pCant = consumiblesDraftCantidad,
+                        pSol = consumiblesDraftSolicitante,
+                        pLab = consumiblesDraftLabor,
+                        pCat = c,
+                        pRef = r,
+                    )
                 }
             },
             onEntrada = {
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
                 if (!esPlaceholderConsumibles(itemVal)) {
-                    showDialogEntradaStock("Consumibles", itemVal, refVal) { showConsumiblesForm(pItem, pCant, pSol, pLab) }
+                    guardarDraftConsumibles()
+                    showDialogEntradaStock("Consumibles", itemVal, refVal) {
+                        showConsumiblesForm(
+                            pItem = itemVal,
+                            pCant = consumiblesDraftCantidad,
+                            pSol = consumiblesDraftSolicitante,
+                            pLab = consumiblesDraftLabor,
+                            pCat = categoriaSeleccionada,
+                            pRef = refVal,
+                        )
+                    }
                 } else {
                     Toast.makeText(this, "Selecciona un producto primero", Toast.LENGTH_SHORT).show()
                 }
             },
         ))
 
-        root.addView(primaryButton("Guardar salida") {
-            if (!required(cantidad, solicitante, labor)) return@primaryButton
+        fun seleccionarUnidadConsumible(valor: String) {
+            val adapter = unidad.adapter ?: return
+            for (idx in 0 until adapter.count) {
+                if (adapter.getItem(idx)?.toString().equals(valor, ignoreCase = true)) {
+                    unidad.setSelection(idx, false)
+                    return
+                }
+            }
+        }
+
+        fun limpiarPreviewEvidenciaConsumibles() {
+            var indice = 0
+            while (indice < root.childCount) {
+                if (root.getChildAt(indice).tag == "PREVIEW_FOTO") {
+                    root.removeViewAt(indice)
+                } else {
+                    indice++
+                }
+            }
+        }
+
+        fun lineaDesdeFormulario(): ConsumibleEntregaLinea? {
             val codigoPreferido = codigoInternoValidadoParaSalida(codigoInterno, codigoInternoSeleccionado)
-            
+            val categoriaVal = catSpinner.selectedItem?.toString() ?: ""
             val itemVal = itemSpinner.selectedItem?.toString() ?: ""
             val refVal = refSpinner.selectedItem?.toString() ?: ""
-            
-            if (esPlaceholderConsumibles(itemVal) || esPlaceholderConsumibles(refVal)) {
-                Toast.makeText(this, "Selecciona un producto válido", Toast.LENGTH_SHORT).show()
+
+            if (esPlaceholderConsumibles(categoriaVal) || esPlaceholderConsumibles(itemVal) || esPlaceholderConsumibles(refVal)) {
+                Toast.makeText(this, "Selecciona un producto valido", Toast.LENGTH_SHORT).show()
+                return null
+            }
+
+            val cantVal = cantidad.text.toString().replace(",", ".").toDoubleOrNull() ?: 0.0
+            if (cantidad.text.toString().isBlank() || cantVal <= 0.0) {
+                Toast.makeText(this, "La cantidad debe ser mayor a cero", Toast.LENGTH_SHORT).show()
+                return null
+            }
+
+            if (!stockVerificado) {
+                Toast.makeText(this, "Espera la consulta de stock antes de agregar", Toast.LENGTH_SHORT).show()
+                return null
+            }
+
+            if (cantVal > stockDisponible) {
+                Toast.makeText(this, "Stock insuficiente para $itemVal. Disponible: ${cantidadConsumibleLegible(stockDisponible)} $unidadStockSeleccionada", Toast.LENGTH_LONG).show()
+                return null
+            }
+
+            return ConsumibleEntregaLinea(
+                categoria = categoriaVal,
+                item = itemVal,
+                referencia = refVal,
+                codigoInterno = codigoPreferido,
+                documentoId = documentoExistenciaSeleccionado,
+                cantidad = cantVal,
+                unidad = unidad.selectedItem?.toString() ?: "Unidad",
+                stockDisponible = stockDisponible,
+                unidadStock = unidadStockSeleccionada,
+            )
+        }
+
+        val productosAgregados = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(4))
+        }
+
+        var botonAgregar: Button? = null
+        var botonRegistrarTodos: Button? = null
+
+        fun actualizarBotonesEntrega() {
+            botonAgregar?.text = if (consumiblesEntregaEditandoId != null) "Actualizar producto" else "Agregar a la entrega"
+            botonRegistrarTodos?.isEnabled = consumiblesEntregaLineas.isNotEmpty() && !consumiblesEntregaProcesando
+            botonRegistrarTodos?.alpha = if (consumiblesEntregaLineas.isNotEmpty() && !consumiblesEntregaProcesando) 1f else 0.55f
+        }
+
+        fun aplicarLineaEnFormulario(linea: ConsumibleEntregaLinea) {
+            consumiblesEntregaEditandoId = linea.id
+            categoriaSeleccionada = linea.categoria
+            itemSeleccionado = linea.item
+            referenciaSeleccionada = linea.referencia
+            consumiblesDraftCategoria = linea.categoria
+            consumiblesDraftItem = linea.item
+            consumiblesDraftReferencia = linea.referencia
+            seleccionarProductoEnSpinners(
+                catSpinner,
+                itemSpinner,
+                refSpinner,
+                catalogoFormularioComoMapAny(),
+                linea.categoria,
+                linea.item,
+                linea.referencia,
+            ) {
+                codigoInternoSeleccionado = linea.codigoInterno
+                documentoExistenciaSeleccionado = linea.documentoId
+                codigoInterno.setText(linea.codigoInterno, false)
+                stockConsultaActual++
+                stockDisponible = linea.stockDisponible
+                unidadStockSeleccionada = linea.unidadStock
+                stockVerificado = true
+                stockLabel.text = "Stock actual: ${cantidadConsumibleLegible(linea.stockDisponible)} ${linea.unidadStock}"
+                stockLabel.setTextColor(if (linea.stockDisponible <= 0.0) Color.RED else verdeOscuro)
+            }
+            cantidad.setText(cantidadConsumibleLegible(linea.cantidad))
+            seleccionarUnidadConsumible(linea.unidad)
+            actualizarBotonesEntrega()
+            Toast.makeText(this, "Edita la linea y actualiza el producto", Toast.LENGTH_SHORT).show()
+        }
+
+        fun renderProductosAgregados() {
+            productosAgregados.removeAllViews()
+            productosAgregados.addView(TextView(this).apply {
+                text = "Productos agregados"
+                textSize = 15f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setTextColor(verdeOscuro)
+                setPadding(0, dp(8), 0, dp(4))
+            })
+
+            if (consumiblesEntregaLineas.isEmpty()) {
+                productosAgregados.addView(TextView(this).apply {
+                    text = "Aun no hay productos en esta entrega."
+                    textSize = 13f
+                    setTextColor(gris)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    background = arlesRoundedBackground(Color.WHITE, ArlesPalette.line, 10)
+                })
+                actualizarBotonesEntrega()
+                return
+            }
+
+            consumiblesEntregaLineas.forEachIndexed { index, linea ->
+                val cardLinea = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = arlesRoundedBackground(Color.WHITE, ArlesPalette.line, 12)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ).apply { setMargins(0, dp(4), 0, dp(8)) }
+                }
+                cardLinea.addView(TextView(this).apply {
+                    text = "${index + 1}. ${linea.item}"
+                    textSize = 14f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    setTextColor(texto)
+                })
+                cardLinea.addView(TextView(this).apply {
+                    text = listOf(
+                        "Ref: ${linea.referencia}",
+                        if (linea.codigoInterno.isNotBlank()) "Codigo: ${linea.codigoInterno}" else "",
+                        "Cantidad: ${cantidadConsumibleLegible(linea.cantidad)} ${linea.unidad}",
+                        "Stock: ${cantidadConsumibleLegible(linea.stockDisponible)} ${linea.unidadStock}",
+                    ).filter { it.isNotBlank() }.joinToString("\n")
+                    textSize = 12.5f
+                    setTextColor(gris)
+                    setPadding(0, dp(4), 0, dp(8))
+                })
+                val acciones = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val editar = outlineButton("Editar") { aplicarLineaEnFormulario(linea) }
+                val eliminar = outlineButton("Eliminar") {
+                    consumiblesEntregaLineas.removeAll { it.id == linea.id }
+                    if (consumiblesEntregaEditandoId == linea.id) consumiblesEntregaEditandoId = null
+                    renderProductosAgregados()
+                }.apply { setTextColor(Color.RED) }
+                acciones.addView(editar, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) })
+                acciones.addView(eliminar, LinearLayout.LayoutParams(0, dp(44), 1f))
+                cardLinea.addView(acciones)
+                productosAgregados.addView(cardLinea)
+            }
+            actualizarBotonesEntrega()
+        }
+
+        fun limpiarSeleccionParaSiguienteProducto() {
+            cantidad.setText("")
+            codigoInternoSeleccionado = ""
+            documentoExistenciaSeleccionado = ""
+            codigoInterno.setText("", false)
+            stockConsultaActual++
+            stockVerificado = false
+            stockDisponible = 0.0
+            unidadStockSeleccionada = "Unidad"
+            stockLabel.text = "Selecciona un producto para ver stock"
+            stockLabel.setTextColor(verdeOscuro)
+            consumiblesDraftCantidad = ""
+            guardarDraftConsumibles()
+        }
+
+        botonAgregar = primaryButton("Agregar a la entrega") {
+            guardarDraftConsumibles()
+            val nuevaLinea = lineaDesdeFormulario() ?: return@primaryButton
+            val idEditando = consumiblesEntregaEditandoId
+            val indiceEditando = idEditando?.let { id -> consumiblesEntregaLineas.indexOfFirst { it.id == id } } ?: -1
+            val indiceDuplicado = consumiblesEntregaLineas.indexOfFirst { it.clave() == nuevaLinea.clave() && it.id != idEditando }
+            val cantidadTotal = nuevaLinea.cantidad + if (indiceDuplicado >= 0) consumiblesEntregaLineas[indiceDuplicado].cantidad else 0.0
+
+            if (cantidadTotal > nuevaLinea.stockDisponible) {
+                Toast.makeText(this, "Stock insuficiente para la cantidad acumulada de ${nuevaLinea.item}", Toast.LENGTH_LONG).show()
                 return@primaryButton
             }
 
-            val cantVal = cantidad.text.toString().toDoubleOrNull() ?: 0.0
-            
-            // Log de seguridad
-            if (cantVal > stockDisponible) {
-                android.util.Log.d("ArlesGestión", "Salida permitida con stock insuficiente: Solicitado $cantVal / Disponible $stockDisponible")
+            when {
+                indiceEditando >= 0 && indiceDuplicado >= 0 -> {
+                    val acumulada = consumiblesEntregaLineas[indiceDuplicado].copy(
+                        cantidad = cantidadTotal,
+                        unidad = nuevaLinea.unidad,
+                        stockDisponible = nuevaLinea.stockDisponible,
+                        unidadStock = nuevaLinea.unidadStock,
+                    )
+                    consumiblesEntregaLineas[indiceDuplicado] = acumulada
+                    consumiblesEntregaLineas.removeAt(indiceEditando)
+                }
+                indiceEditando >= 0 -> {
+                    consumiblesEntregaLineas[indiceEditando] = nuevaLinea.copy(id = consumiblesEntregaLineas[indiceEditando].id)
+                }
+                indiceDuplicado >= 0 -> {
+                    consumiblesEntregaLineas[indiceDuplicado] = consumiblesEntregaLineas[indiceDuplicado].copy(
+                        cantidad = cantidadTotal,
+                        unidad = nuevaLinea.unidad,
+                        stockDisponible = nuevaLinea.stockDisponible,
+                        unidadStock = nuevaLinea.unidadStock,
+                    )
+                }
+                else -> consumiblesEntregaLineas.add(nuevaLinea)
             }
 
-            val nombreCompleto = "$itemVal ($refVal)"
-            val uniVal = unidad.selectedItem.toString()
+            consumiblesEntregaEditandoId = null
+            renderProductosAgregados()
+            limpiarSeleccionParaSiguienteProducto()
+            Toast.makeText(this, "Producto agregado a la entrega", Toast.LENGTH_SHORT).show()
+        }
+        botonAgregar?.let { root.addView(it) }
+        root.addView(productosAgregados)
 
-            val mov = Movimiento(
-                fecha = now(),
-                modulo = "Consumibles",
-                tipoMovimiento = "Salida",
-                item = nombreCompleto,
-                referencia = refVal,
-                cantidad = cantidad.text.toString(),
-                unidad = uniVal,
-                solicitante = solicitante.text.toString(),
-                labor = labor.text.toString(),
-                observaciones = observaciones.text.toString()
-            )
+        botonRegistrarTodos = primaryButton("Registrar todos") { view ->
+            if (consumiblesEntregaProcesando) return@primaryButton
+            guardarDraftConsumibles()
+            if (consumiblesEntregaLineas.isEmpty()) {
+                Toast.makeText(this, "Agrega al menos un producto", Toast.LENGTH_SHORT).show()
+                return@primaryButton
+            }
+            if (!required(solicitante, labor)) return@primaryButton
 
-            registrarSalidaCloudPrimero(
-                mov = mov,
-                cantidadNumerica = cantVal,
-                codigoInternoPreferido = codigoPreferido,
-                itemBase = itemVal,
-                fotoUrl = urlEvidencia.ifBlank { uriLocalEvidencia },
-                onSuccess = {
-                    saved("Salida guardada con stock trazable")
-                    // Permanecer en la misma pantalla limpiando campos
-                    cantidad.setText("")
-                    observaciones.setText("")
-                    urlEvidencia = ""
-                    uriLocalEvidencia = ""
-                    for (i in 0 until root.childCount) {
-                        if (root.getChildAt(i).tag == "PREVIEW_FOTO") {
-                            root.removeViewAt(i)
-                            break
+            fun finalizarBloqueo() {
+                consumiblesEntregaProcesando = false
+                (view as? Button)?.text = "Registrar todos"
+                actualizarBotonesEntrega()
+            }
+
+            fun registrarConEvidencia(fotoFinal: String) {
+                val lineas = consumiblesEntregaLineas.toList()
+                registrarSalidaMultipleConsumibles(
+                    lineas = lineas,
+                    solicitante = solicitante.text.toString(),
+                    labor = labor.text.toString(),
+                    observaciones = observaciones.text.toString(),
+                    fotoUrl = fotoFinal,
+                    onSuccess = {
+                        saved("Entrega registrada con ${lineas.size} producto(s)")
+                        consumiblesEntregaLineas.clear()
+                        consumiblesEntregaEditandoId = null
+                        consumiblesDraftCantidad = ""
+                        consumiblesDraftObservaciones = ""
+                        consumiblesDraftUrlEvidencia = ""
+                        consumiblesDraftUriEvidencia = ""
+                        urlEvidencia = ""
+                        uriLocalEvidencia = ""
+                        cantidad.setText("")
+                        observaciones.setText("")
+                        limpiarPreviewEvidenciaConsumibles()
+                        renderProductosAgregados()
+                        finalizarBloqueo()
+                    },
+                    onFailure = { e ->
+                        Toast.makeText(this, e.localizedMessage ?: "No se pudo registrar la entrega", Toast.LENGTH_LONG).show()
+                        finalizarBloqueo()
+                    },
+                )
+            }
+
+            consumiblesEntregaProcesando = true
+            (view as? Button)?.apply {
+                isEnabled = false
+                alpha = 0.55f
+                text = "Registrando..."
+            }
+
+            val evidenciaLocal = uriLocalEvidencia.ifBlank {
+                urlEvidencia.takeIf { evidenciaEsUriLocal(it) }.orEmpty()
+            }
+            if (urlEvidencia.isNotBlank() && !evidenciaEsUriLocal(urlEvidencia)) {
+                registrarConEvidencia(urlEvidencia)
+            } else if (evidenciaLocal.isNotBlank()) {
+                if (!isNetworkAvailable()) {
+                    Toast.makeText(this, "Conecta a internet para subir la evidencia y registrar todo", Toast.LENGTH_LONG).show()
+                    finalizarBloqueo()
+                } else {
+                    subirEvidenciaCloud(evidenciaLocal, "consumibles") { url ->
+                        if (url.isBlank()) {
+                            Toast.makeText(this, "No se pudo subir la evidencia", Toast.LENGTH_LONG).show()
+                            finalizarBloqueo()
+                        } else {
+                            urlEvidencia = url
+                            consumiblesDraftUrlEvidencia = url
+                            registrarConEvidencia(url)
                         }
                     }
                 }
-            )
-        })
+            } else {
+                registrarConEvidencia("")
+            }
+        }
+        botonRegistrarTodos?.let { root.addView(it) }
+        renderProductosAgregados()
     }
+
+private fun MainActivity.resolverDocumentoSalidaConsumible(
+    linea: ConsumibleEntregaLinea,
+    onResult: (DocumentSnapshot) -> Unit,
+    onFailure: (Exception) -> Unit,
+) {
+    fun entregarSiValido(doc: DocumentSnapshot?): Boolean {
+        if (doc != null && doc.exists() && doc.getBoolean("activo") != false && moduloCoincide(doc, "Consumibles")) {
+            onResult(doc)
+            return true
+        }
+        return false
+    }
+
+    fun fallbackPorBusqueda() {
+        buscarExistenciaPorProducto("Consumibles", linea.item, linea.referencia, { producto ->
+            if (producto == null) {
+                buscarDocumentoExistencia(
+                    linea.codigoInterno.ifBlank { linea.item },
+                    "Consumibles",
+                    { doc ->
+                        if (!entregarSiValido(doc)) {
+                            onFailure(IllegalStateException("No se encontro inventario para ${linea.item} / ${linea.referencia}"))
+                        }
+                    },
+                    onFailure,
+                )
+            } else {
+                firestore.collection("existencias").document(producto.documentoId).get()
+                    .addOnSuccessListener { doc ->
+                        if (!entregarSiValido(doc)) {
+                            onFailure(IllegalStateException("No se encontro inventario activo para ${linea.item} / ${linea.referencia}"))
+                        }
+                    }
+                    .addOnFailureListener(onFailure)
+            }
+        }, onFailure)
+    }
+
+    val docId = linea.documentoId.ifBlank { normalizarCodigoInternoSinActividad(linea.codigoInterno) }
+    if (docId.isBlank()) {
+        fallbackPorBusqueda()
+        return
+    }
+
+    firestore.collection("existencias").document(docId).get()
+        .addOnSuccessListener { doc ->
+            if (!entregarSiValido(doc)) fallbackPorBusqueda()
+        }
+        .addOnFailureListener { fallbackPorBusqueda() }
+}
+
+private fun MainActivity.resolverDocumentosSalidaConsumibles(
+    lineas: List<ConsumibleEntregaLinea>,
+    indice: Int = 0,
+    acumuladas: MutableList<ConsumibleDocumentoResuelto> = mutableListOf(),
+    onResult: (List<ConsumibleDocumentoResuelto>) -> Unit,
+    onFailure: (Exception) -> Unit,
+) {
+    if (indice >= lineas.size) {
+        onResult(acumuladas)
+        return
+    }
+
+    resolverDocumentoSalidaConsumible(
+        linea = lineas[indice],
+        onResult = { doc ->
+            acumuladas.add(ConsumibleDocumentoResuelto(lineas[indice], doc))
+            resolverDocumentosSalidaConsumibles(lineas, indice + 1, acumuladas, onResult, onFailure)
+        },
+        onFailure = onFailure,
+    )
+}
+
+private fun MainActivity.registrarSalidaMultipleConsumibles(
+    lineas: List<ConsumibleEntregaLinea>,
+    solicitante: String,
+    labor: String,
+    observaciones: String,
+    fotoUrl: String,
+    onSuccess: (() -> Unit)? = null,
+    onFailure: ((Exception) -> Unit)? = null,
+) {
+    if (lineas.isEmpty()) {
+        onFailure?.invoke(IllegalStateException("No hay productos para registrar"))
+        return
+    }
+
+    if (!isNetworkAvailable()) {
+        onFailure?.invoke(IllegalStateException("Sin conexion no se puede validar stock y registrar todo o nada"))
+        return
+    }
+
+    resolverDocumentosSalidaConsumibles(
+        lineas = lineas,
+        onResult = { resueltos ->
+            val fechaEntrega = now()
+            val uid = auth.currentUser?.uid ?: ""
+            val entregaId = "CONSUMIBLES-${System.currentTimeMillis()}"
+
+            firestore.runTransaction { transaction ->
+                val refsPorDoc = resueltos.associate { it.doc.id to firestore.collection("existencias").document(it.doc.id) }
+                val snapshotsPorDoc = mutableMapOf<String, DocumentSnapshot>()
+                val stockInicialPorDoc = mutableMapOf<String, Double>()
+                val totalSolicitadoPorDoc = resueltos
+                    .groupBy { it.doc.id }
+                    .mapValues { (_, docs) -> docs.sumOf { it.linea.cantidad } }
+
+                refsPorDoc.forEach { (docId, refDoc) ->
+                    val snapshot = transaction.get(refDoc)
+                    if (!snapshot.exists() || snapshot.getBoolean("activo") == false || !moduloCoincide(snapshot, "Consumibles")) {
+                        throw IllegalStateException("Inventario no disponible para ${docId}")
+                    }
+                    val stockActual = numeroDocumento(snapshot, "cantidad", "stock_actual")
+                    val solicitado = totalSolicitadoPorDoc[docId] ?: 0.0
+                    if (solicitado <= 0.0) {
+                        throw IllegalStateException("Cantidad invalida en la entrega")
+                    }
+                    if (solicitado > stockActual) {
+                        val lineaError = resueltos.firstOrNull { it.doc.id == docId }?.linea
+                        val nombre = lineaError?.let { "${it.item} / ${it.referencia}" } ?: docId
+                        throw IllegalStateException("Stock insuficiente en $nombre. Disponible: ${cantidadConsumibleLegible(stockActual)}, solicitado: ${cantidadConsumibleLegible(solicitado)}")
+                    }
+                    snapshotsPorDoc[docId] = snapshot
+                    stockInicialPorDoc[docId] = stockActual
+                }
+
+                val stockRestantePorDoc = stockInicialPorDoc.toMutableMap()
+                resueltos.forEachIndexed { index, resuelto ->
+                    val linea = resuelto.linea
+                    val docId = resuelto.doc.id
+                    val snapshot = snapshotsPorDoc[docId] ?: throw IllegalStateException("Inventario no disponible para ${linea.item}")
+                    val refDoc = refsPorDoc[docId] ?: throw IllegalStateException("Inventario no disponible para ${linea.item}")
+                    val stockAnterior = stockRestantePorDoc[docId] ?: 0.0
+                    val stockNuevo = stockAnterior - linea.cantidad
+                    val codigoVisible = codigoOriginalExistencia(snapshot).ifBlank { codigoExistencia(snapshot) }
+                    val ubicacion = ubicacionExistencia(snapshot)
+                    val nombreCompleto = "${linea.item} (${linea.referencia})"
+
+                    transaction.set(refDoc, mapOf(
+                        "cantidad" to stockNuevo,
+                        "stock_actual" to stockNuevo,
+                        "ultima_fecha" to fechaEntrega,
+                        "ultimo_solicitante" to solicitante,
+                    ), SetOptions.merge())
+
+                    val movData = mutableMapOf<String, Any?>(
+                        "fecha" to fechaEntrega,
+                        "modulo" to "Consumibles",
+                        "tipoMovimiento" to "Salida",
+                        "item" to nombreCompleto,
+                        "item_base" to linea.item,
+                        "categoria" to linea.categoria,
+                        "referencia" to linea.referencia,
+                        "cantidad" to cantidadConsumibleLegible(linea.cantidad),
+                        "unidad" to linea.unidad,
+                        "solicitante" to solicitante,
+                        "labor" to labor,
+                        "observaciones" to observaciones,
+                        "usuario" to uid,
+                        "fotoUrl" to fotoUrl,
+                        "codigo_interno" to codigoVisible,
+                        "codigo_original" to codigoVisible,
+                        "documento_id" to docId,
+                        "producto_id" to docId,
+                        "ubicacion" to ubicacion,
+                        "stock_actualizado" to true,
+                        "stock_anterior" to stockAnterior,
+                        "stock_nuevo" to stockNuevo,
+                        "entrega_id" to entregaId,
+                        "linea_entrega" to (index + 1),
+                        "total_lineas" to resueltos.size,
+                    )
+
+                    transaction.set(firestore.collection("movimientos").document(), movData)
+                    stockRestantePorDoc[docId] = stockNuevo
+                }
+                resueltos.size
+            }.addOnSuccessListener {
+                onSuccess?.invoke()
+            }.addOnFailureListener { e ->
+                onFailure?.invoke(e)
+            }
+        },
+        onFailure = { e -> onFailure?.invoke(e) },
+    )
+}
 
 internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
         val tipos = tiposCombustible()
