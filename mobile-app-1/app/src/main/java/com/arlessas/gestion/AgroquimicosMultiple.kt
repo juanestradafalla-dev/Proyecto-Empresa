@@ -68,6 +68,7 @@ private var agroPersonalizadosCargados = false
 private var agroPersonalizadosCargando = false
 
 private fun MainActivity.registrarAgroEnCatalogoLocal(producto: AgroProductoMeta) {
+    if (ModulosInventario.moduloQuimico(producto.categoria, producto.ubicacion) != ModulosInventario.AGROQUIMICOS) return
     agroProductosPersonalizados[producto.documentoId] = producto
     val modulo = catalogoCargado.getOrPut(ModulosInventario.AGROQUIMICOS) { mutableMapOf() }
     val categoria = modulo.getOrPut(producto.categoria) { mutableMapOf() }
@@ -329,6 +330,15 @@ internal fun MainActivity.showAgroquimicosMultipleInterno(
     }
 
     fun seleccionarUbicacion(opcion: QuimicoUbicacionStock?, token: String = tokenSeleccion()) {
+        if (opcion != null &&
+            ModulosInventario.moduloQuimico(opcion.categoria, opcion.ubicacion) != ModulosInventario.AGROQUIMICOS
+        ) {
+            limpiarSeleccionStock()
+            actualizarResumen()
+            stockLabel.text = "La ubicacion encontrada no pertenece a Agroquimicos"
+            stockLabel.setTextColor(Color.RED)
+            return
+        }
         ubicacionSeleccionada = opcion
         if (opcion == null) {
             documentoSeleccionado = ""
@@ -366,11 +376,14 @@ internal fun MainActivity.showAgroquimicosMultipleInterno(
         val token = tokenSeleccion(codigoOriginal)
         cargarUbicacionesQuimico(codigoOriginal, producto, { opciones ->
             if (!pantallaActiva() || consulta != consultaStockActual || token != tokenSeleccion()) return@cargarUbicacionesQuimico
-            ubicacionesActuales = opciones
-            val seleccion = opciones.find { it.documentoId == documentoPreferido }
-                ?: opciones.find { it.documentoId == documentoSeleccionado }
-                ?: opciones.find { normalizarBusqueda(it.ubicacion) == normalizarBusqueda(ubicacionPreferida) }
-                ?: opciones.firstOrNull()
+            val opcionesAgro = opciones.filter {
+                ModulosInventario.moduloQuimico(it.categoria, it.ubicacion) == ModulosInventario.AGROQUIMICOS
+            }
+            ubicacionesActuales = opcionesAgro
+            val seleccion = opcionesAgro.find { it.documentoId == documentoPreferido }
+                ?: opcionesAgro.find { it.documentoId == documentoSeleccionado }
+                ?: opcionesAgro.find { normalizarBusqueda(it.ubicacion) == normalizarBusqueda(ubicacionPreferida) }
+                ?: opcionesAgro.firstOrNull()
             seleccionarUbicacion(seleccion, token)
         }, {
             if (!pantallaActiva() || consulta != consultaStockActual || token != tokenSeleccion()) return@cargarUbicacionesQuimico
@@ -396,6 +409,10 @@ internal fun MainActivity.showAgroquimicosMultipleInterno(
             actualizarResumen()
             return
         }
+        if (ModulosInventario.moduloQuimico(meta.categoria, meta.ubicacion) != ModulosInventario.AGROQUIMICOS) {
+            aplicarMeta(null)
+            return
+        }
         documentoSeleccionado = meta.documentoId
         codigoOriginalSeleccionado = meta.codigoOriginal
         escribirCodigoSinBusqueda(meta.codigoOriginal)
@@ -412,10 +429,13 @@ internal fun MainActivity.showAgroquimicosMultipleInterno(
             aplicarMeta(AgroProductoMeta(canonico.documentoId, canonico.codigoOriginal, canonico.categoria, canonico.subcategoria, canonico.item, canonico.ubicacion, canonico.unidad))
             return
         }
-        val local = metaPersonalizado(categoria, subcategoria, producto)
+        val local = agroProductosPersonalizados[documentoPreferido]?.takeIf {
+            normalizarBusqueda(it.categoria) == normalizarBusqueda(categoria) &&
+                normalizarBusqueda(it.subcategoria) == normalizarBusqueda(subcategoria) &&
+                normalizarBusqueda(it.producto) == normalizarBusqueda(producto)
+        } ?: metaPersonalizado(categoria, subcategoria, producto)
         if (local != null) {
             aplicarMeta(local.copy(
-                documentoId = documentoPreferido.ifBlank { local.documentoId },
                 ubicacion = ubicacionPreferida.ifBlank { local.ubicacion },
             ))
             return
@@ -506,6 +526,11 @@ internal fun MainActivity.showAgroquimicosMultipleInterno(
     setupCodigoInternoSalida(root, codigoInterno, ModulosInventario.AGROQUIMICOS) { producto ->
         if (!eventosSpinnerActivos) return@setupCodigoInternoSalida
         consultaStockActual++
+        if (ModulosInventario.moduloQuimico(producto.categoria, producto.ubicacion) != ModulosInventario.AGROQUIMICOS) {
+            aplicarMeta(null)
+            Toast.makeText(this, "El codigo corresponde a Lubricantes taller", Toast.LENGTH_LONG).show()
+            return@setupCodigoInternoSalida
+        }
         val subcategoria = producto.subcategoria.ifBlank { "General" }
         val meta = AgroProductoMeta(
             producto.documentoId.ifBlank { producto.codigoInterno },
@@ -675,9 +700,10 @@ internal fun MainActivity.showAgroquimicosMultipleInterno(
                 agroDraftCategoria = nuevo.categoria
                 agroDraftSubcategoria = nuevo.subcategoria
                 agroDraftProducto = nuevo.producto
-                seleccionarSpinners(nuevo.categoria, nuevo.subcategoria, nuevo.producto) {
-                    aplicarMeta(nuevo)
-                }
+                agroDraftCodigo = nuevo.codigoOriginal
+                agroDraftDocumento = nuevo.documentoId
+                agroDraftUbicacion = nuevo.ubicacion
+                showQuimicoForm()
             }
         },
         onEntrada = {
