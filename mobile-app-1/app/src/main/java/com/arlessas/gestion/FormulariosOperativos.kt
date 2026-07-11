@@ -68,6 +68,51 @@ private var consumiblesDraftObservaciones = ""
 private var consumiblesDraftUrlEvidencia = ""
 private var consumiblesDraftUriEvidencia = ""
 
+private data class EppEntregaLinea(
+    val id: Long = System.nanoTime(),
+    val categoria: String,
+    val item: String,
+    val referencia: String,
+    val codigoInterno: String,
+    val documentoId: String,
+    val cantidad: Int,
+    val stockDisponible: Double,
+    val unidad: String = "Unidad",
+) {
+    fun clave(): String = listOf(
+        normalizarBusqueda(categoria),
+        normalizarBusqueda(item),
+        normalizarBusqueda(referencia),
+        normalizarCodigoInternoSinActividad(codigoInterno.ifBlank { documentoId }),
+    ).joinToString("|")
+}
+
+private val eppEntregaLineas = mutableListOf<EppEntregaLinea>()
+private var eppEntregaEditandoId: Long? = null
+private var eppEntregaProcesando = false
+private var eppDraftCategoria = ""
+private var eppDraftItem = ""
+private var eppDraftReferencia = ""
+private var eppDraftCantidad = "1"
+private var eppDraftSolicitante = ""
+private var eppDraftObservaciones = ""
+private var eppDraftUrlEvidencia = ""
+private var eppDraftUriEvidencia = ""
+
+private fun limpiarEstadoEntregaEpp() {
+    eppEntregaLineas.clear()
+    eppEntregaEditandoId = null
+    eppEntregaProcesando = false
+    eppDraftCategoria = ""
+    eppDraftItem = ""
+    eppDraftReferencia = ""
+    eppDraftCantidad = "1"
+    eppDraftSolicitante = ""
+    eppDraftObservaciones = ""
+    eppDraftUrlEvidencia = ""
+    eppDraftUriEvidencia = ""
+}
+
 private fun normalizarCodigoInternoSinActividad(valor: String): String {
     val limpio = valor.trim().uppercase(Locale.getDefault())
     return limpio.replace(Regex("[^A-Z0-9]+"), "")
@@ -75,6 +120,11 @@ private fun normalizarCodigoInternoSinActividad(valor: String): String {
 
 private fun cantidadConsumibleLegible(valor: Double): String {
     return if (valor % 1.0 == 0.0) valor.toLong().toString()
+    else String.format(Locale.getDefault(), "%.2f", valor).trimEnd('0').trimEnd(',', '.')
+}
+
+private fun cantidadEppLegible(valor: Double): String {
+    return if (valor % 1.0 == 0.0) valor.toInt().toString()
     else String.format(Locale.getDefault(), "%.2f", valor).trimEnd('0').trimEnd(',', '.')
 }
 
@@ -851,8 +901,43 @@ private fun MainActivity.showQuimicoInventarioForm(
     }
 
 internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
-        currentScreenRenderer = { showEPPForm(pItem, pCant, pSol, pCat, pRef) }
-        val root = baseScreen("Entrega de EPP", "Registro obligatorio de implementos de seguridad con control de frecuencia.")
+        if (pCat.isNotBlank()) eppDraftCategoria = pCat
+        if (pItem.isNotBlank()) eppDraftItem = pItem
+        if (pRef.isNotBlank()) eppDraftReferencia = pRef
+        if (pCant.isNotBlank()) eppDraftCantidad = pCant
+        if (pSol.isNotBlank()) eppDraftSolicitante = pSol
+
+        fun salirEpp() {
+            if (eppEntregaLineas.isNotEmpty()) {
+                AlertDialog.Builder(this)
+                    .setTitle("Descartar entrega")
+                    .setMessage("Hay EPP agregados sin registrar. Si sales, se descartara esta entrega.")
+                    .setPositiveButton("Descartar") { _, _ ->
+                        limpiarEstadoEntregaEpp()
+                        showMainMenu()
+                    }
+                    .setNegativeButton("Seguir editando", null)
+                    .show()
+            } else {
+                limpiarEstadoEntregaEpp()
+                showMainMenu()
+            }
+        }
+
+        currentScreenRenderer = {
+            showEPPForm(
+                pItem = eppDraftItem,
+                pCant = eppDraftCantidad,
+                pSol = eppDraftSolicitante,
+                pCat = eppDraftCategoria,
+                pRef = eppDraftReferencia,
+            )
+        }
+        val root = baseScreen(
+            "Entrega de EPP",
+            "Registro obligatorio de implementos de seguridad con control de frecuencia.",
+            backAction = { salirEpp() },
+        )
         
         val categoriasEppPermitidas = listOf(
             "Protección Cabeza y Rostro",
@@ -881,20 +966,19 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         val refSpinner = spinner(root, "Talla / referencia *", listOf("Selecciona item"))
         val codigoInterno = codigoInternoField(root, "Código interno", "Escribe o elige el código interno", scan = false)
         var codigoInternoSeleccionado = ""
+        var documentoEppSeleccionado = ""
+        var productoEppSeleccionado: ExistenciaProducto? = null
+        var stockEppDisponible = 0.0
+        var stockEppVerificado = false
 
         var actualizandoSpinnerEpp = false
-        var categoriaSeleccionada = pCat
-        var itemSeleccionado = pItem
-        var referenciaSeleccionada = pRef
+        var categoriaSeleccionada = pCat.ifBlank { eppDraftCategoria }
+        var itemSeleccionado = pItem.ifBlank { eppDraftItem }
+        var referenciaSeleccionada = pRef.ifBlank { eppDraftReferencia }
 
         val stockDisponible = stockInfoCard("Disponible: selecciona un item para consultar stock")
         root.addView(stockDisponible)
         var stockConsultaActual = 0
-
-        fun cantidadLegible(valor: Double): String {
-            return if (valor % 1.0 == 0.0) valor.toInt().toString()
-            else String.format(Locale.getDefault(), "%.2f", valor)
-        }
 
         fun itemsEpp(categoria: String): List<String> {
             val items = getCatalogo()[categoria]?.keys?.toList()?.sortedBy { normalizarBusqueda(it) }.orEmpty()
@@ -947,18 +1031,28 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             actualizarReferenciasEpp(origen, preservar = preservado)
         }
 
-        fun mostrarStock(producto: ExistenciaProducto?) {
+        fun mostrarStock(producto: ExistenciaProducto?, consulta: Int? = null) {
+            if (consulta != null && consulta != stockConsultaActual) return
             if (producto == null) {
+                productoEppSeleccionado = null
+                documentoEppSeleccionado = ""
+                stockEppDisponible = 0.0
+                stockEppVerificado = false
                 android.util.Log.d(BUG_STOCK_EPP_TAG, "stock registros=0 stock=0 unidad=UNIDAD")
                 stockDisponible.text = "Disponible: 0 UNIDAD"
                 stockDisponible.setTextColor(Color.rgb(160, 80, 0))
                 return
             }
+            productoEppSeleccionado = producto
+            documentoEppSeleccionado = producto.documentoId
+            codigoInternoSeleccionado = producto.codigoInterno
+            stockEppDisponible = producto.cantidad
+            stockEppVerificado = true
             val unidad = producto.unidad.ifBlank { "Unidad" }
             val referencia = producto.referenciaCatalogo.ifBlank { producto.referencia }
             val detalle = listOf(producto.codigoInterno, producto.item, referencia).filter { it.isNotBlank() }.joinToString(" - ")
             android.util.Log.d(BUG_STOCK_EPP_TAG, "stock registros=1 stock=${producto.cantidad} unidad=$unidad codigo=${producto.codigoInterno}")
-            stockDisponible.text = "Disponible: ${cantidadLegible(producto.cantidad)} $unidad\n$detalle"
+            stockDisponible.text = "Disponible: ${cantidadEppLegible(producto.cantidad)} $unidad\n$detalle"
             stockDisponible.setTextColor(if (producto.cantidad > 0.0) verdeOscuro else Color.rgb(180, 40, 40))
         }
 
@@ -977,6 +1071,7 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             )
             stockDisponible.text = "Disponible: consultando..."
             stockDisponible.setTextColor(gris)
+            stockEppVerificado = false
 
             if (codigo.isNotBlank()) {
                 buscarExistenciaPorCodigoInterno(codigo, "EPP", { producto ->
@@ -984,10 +1079,14 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                         if (producto == null) {
                             android.util.Log.d(BUG_STOCK_EPP_TAG, "sin coincidencias por codigo=$codigo categoria=$categoriaVal item=$itemVal referencia=$refVal")
                         }
-                        mostrarStock(producto)
+                        mostrarStock(producto, consulta)
                     }
                 }, {
                     if (consulta == stockConsultaActual) {
+                        productoEppSeleccionado = null
+                        documentoEppSeleccionado = ""
+                        stockEppDisponible = 0.0
+                        stockEppVerificado = false
                         android.util.Log.d(BUG_STOCK_EPP_TAG, "fallo consulta codigo=$codigo error=${it.localizedMessage ?: "desconocido"}")
                         stockDisponible.text = "Disponible: no se pudo consultar Firestore"
                         stockDisponible.setTextColor(Color.rgb(180, 40, 40))
@@ -997,6 +1096,10 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
             }
 
             if (itemVal.isBlank() || refVal.isBlank()) {
+                productoEppSeleccionado = null
+                documentoEppSeleccionado = ""
+                stockEppDisponible = 0.0
+                stockEppVerificado = false
                 android.util.Log.d(BUG_STOCK_EPP_TAG, "sin coincidencias filtros incompletos categoria=$categoriaVal item=$itemVal referencia=$refVal codigo=$codigoCampo")
                 stockDisponible.text = "Disponible: selecciona un item para consultar stock"
                 stockDisponible.setTextColor(gris)
@@ -1008,10 +1111,14 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                     if (producto == null) {
                         android.util.Log.d(BUG_STOCK_EPP_TAG, "sin coincidencias categoria=$categoriaVal item=$itemVal referencia=$refVal")
                     }
-                    mostrarStock(producto)
+                    mostrarStock(producto, consulta)
                 }
             }, {
                 if (consulta == stockConsultaActual) {
+                    productoEppSeleccionado = null
+                    documentoEppSeleccionado = ""
+                    stockEppDisponible = 0.0
+                    stockEppVerificado = false
                     android.util.Log.d(BUG_STOCK_EPP_TAG, "fallo consulta categoria=$categoriaVal item=$itemVal referencia=$refVal error=${it.localizedMessage ?: "desconocido"}")
                     stockDisponible.text = "Disponible: no se pudo consultar Firestore"
                     stockDisponible.setTextColor(Color.rgb(180, 40, 40))
@@ -1020,7 +1127,9 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         }
 
         setupCodigoInternoSalida(root, codigoInterno, "EPP") { producto ->
+            stockConsultaActual++
             codigoInternoSeleccionado = producto.codigoInterno
+            documentoEppSeleccionado = producto.documentoId
             android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado item=${producto.item} referencia=${producto.referenciaCatalogo}")
             seleccionarProductoDesdeExistencia(producto, catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny())
             mostrarStock(producto)
@@ -1028,8 +1137,11 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
 
         setupSearchBar(root, "EPP") { _, c, i, r ->
             seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny(), c, i, r) {
+                val consulta = ++stockConsultaActual
                 autocompletarCodigoDesdeProducto(codigoInterno, "EPP", i, r) { producto ->
+                    if (consulta != stockConsultaActual) return@autocompletarCodigoDesdeProducto
                     codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
+                    documentoEppSeleccionado = producto?.documentoId.orEmpty()
                     android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado item=$i referencia=$r")
                     mostrarStock(producto)
                 }
@@ -1038,8 +1150,11 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
 
         if (pCat.isNotBlank() && pItem.isNotBlank()) {
             seleccionarProductoEnSpinners(catSpinner, itemSpinner, refSpinner, catalogoEppComoMapAny(), pCat, pItem, pRef) {
+                val consulta = ++stockConsultaActual
                 autocompletarCodigoDesdeProducto(codigoInterno, "EPP", pItem, pRef) { encontrado ->
+                    if (consulta != stockConsultaActual) return@autocompletarCodigoDesdeProducto
                     codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
+                    documentoEppSeleccionado = encontrado?.documentoId.orEmpty()
                     android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado item=$pItem referencia=$pRef")
                     mostrarStock(encontrado)
                 }
@@ -1053,13 +1168,20 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                     return
                 }
                 categoriaSeleccionada = catSpinner.selectedItem?.toString().orEmpty()
+                eppDraftCategoria = categoriaSeleccionada
                 val itemActual = itemSpinner.selectedItem?.toString().orEmpty()
                 val refActual = refSpinner.selectedItem?.toString().orEmpty()
                 itemSeleccionado = if (!esPlaceholderSpinnerDependiente(itemActual)) itemActual else ""
                 referenciaSeleccionada = if (!esPlaceholderSpinnerDependiente(refActual)) refActual else ""
+                eppDraftItem = itemSeleccionado
+                eppDraftReferencia = referenciaSeleccionada
                 android.util.Log.d(BUG_STOCK_EPP_TAG, "categoria seleccionada=$categoriaSeleccionada")
                 actualizarItemsEpp("categoria", preservar = true)
                 codigoInternoSeleccionado = ""
+                documentoEppSeleccionado = ""
+                productoEppSeleccionado = null
+                stockEppDisponible = 0.0
+                stockEppVerificado = false
                 codigoInterno.setText("", false)
                 actualizarStockEpp()
             }
@@ -1073,14 +1195,20 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                     return
                 }
                 itemSeleccionado = itemSpinner.selectedItem?.toString().orEmpty()
+                eppDraftItem = if (!esPlaceholderSpinnerDependiente(itemSeleccionado)) itemSeleccionado else ""
                 val refActual = refSpinner.selectedItem?.toString().orEmpty()
                 referenciaSeleccionada = if (!esPlaceholderSpinnerDependiente(refActual)) refActual else referenciaSeleccionada
+                eppDraftReferencia = referenciaSeleccionada
                 android.util.Log.d(BUG_STOCK_EPP_TAG, "item seleccionado=$itemSeleccionado")
                 actualizarReferenciasEpp("item", preservar = true)
                 
                 // Limpieza de código previo si es manual
                 if (itemSpinner.tag != "SINCRO" && codigoInterno.tag != "SINCRO") {
                     codigoInternoSeleccionado = ""
+                    documentoEppSeleccionado = ""
+                    productoEppSeleccionado = null
+                    stockEppDisponible = 0.0
+                    stockEppVerificado = false
                     codigoInterno.setText("", false)
                 }
                 actualizarStockEpp()
@@ -1097,10 +1225,14 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
                 referenciaSeleccionada = refVal
+                eppDraftReferencia = if (!esPlaceholderSpinnerDependiente(refVal)) refVal else ""
                 android.util.Log.d(BUG_STOCK_EPP_TAG, "tallaReferencia seleccionada=$referenciaSeleccionada item=$itemVal")
                 if (!esPlaceholderSpinnerDependiente(itemVal) && !esPlaceholderSpinnerDependiente(refVal)) {
+                    val consulta = ++stockConsultaActual
                     autocompletarCodigoDesdeProducto(codigoInterno, "EPP", itemVal, refVal) { producto ->
+                        if (consulta != stockConsultaActual) return@autocompletarCodigoDesdeProducto
                         codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
+                        documentoEppSeleccionado = producto?.documentoId.orEmpty()
                         android.util.Log.d(BUG_STOCK_EPP_TAG, "codigo interno seleccionado=$codigoInternoSeleccionado")
                         mostrarStock(producto)
                     }
@@ -1120,134 +1252,566 @@ internal fun MainActivity.showEPPForm(pItem: String = "", pCant: String = "", pS
         actualizarStockEpp()
 
         val cantidad = field(root, "Cantidad *", "Ej: 1", number = true)
-        cantidad.setText(pCant.ifBlank { "1" })
+        cantidad.setText(pCant.ifBlank { eppDraftCantidad.ifBlank { "1" } })
         val solicitante = autoField(root, "Solicitante *", "Nombre de quien recibe")
-        solicitante.setText(pSol)
+        solicitante.setText(pSol.ifBlank { eppDraftSolicitante })
         val observaciones = field(root, "Observaciones", "Opcional")
-        var urlEvidencia = ""
-        var uriLocalEvidencia = ""
+        observaciones.setText(eppDraftObservaciones)
+        var urlEvidencia = eppDraftUrlEvidencia
+        var uriLocalEvidencia = eppDraftUriEvidencia
+
+        fun guardarDraftEpp() {
+            eppDraftCategoria = categoriaSeleccionada.ifBlank { catSpinner.selectedItem?.toString().orEmpty() }
+            eppDraftItem = itemSeleccionado.ifBlank { itemSpinner.selectedItem?.toString().orEmpty() }
+                .takeUnless { esPlaceholderSpinnerDependiente(it) }.orEmpty()
+            eppDraftReferencia = referenciaSeleccionada.ifBlank { refSpinner.selectedItem?.toString().orEmpty() }
+                .takeUnless { esPlaceholderSpinnerDependiente(it) }.orEmpty()
+            eppDraftCantidad = cantidad.text.toString().ifBlank { "1" }
+            eppDraftSolicitante = solicitante.text.toString()
+            eppDraftObservaciones = observaciones.text.toString()
+            eppDraftUrlEvidencia = urlEvidencia
+            eppDraftUriEvidencia = uriLocalEvidencia
+        }
+
+        fun observarDraftEpp(campo: android.widget.EditText, accion: (String) -> Unit) {
+            campo.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    accion(s?.toString().orEmpty())
+                }
+            })
+        }
+
+        observarDraftEpp(cantidad) { eppDraftCantidad = it.ifBlank { "1" } }
+        observarDraftEpp(solicitante) { eppDraftSolicitante = it }
+        observarDraftEpp(observaciones) { eppDraftObservaciones = it }
 
         root.addView(evidenceButton {
             capturarEvidencia { uri ->
                 uriLocalEvidencia = uri
+                eppDraftUriEvidencia = uri
                 mostrarPrevisualizacionEvidencia(root, uri) {
                     uriLocalEvidencia = ""
                     urlEvidencia = ""
+                    eppDraftUriEvidencia = ""
+                    eppDraftUrlEvidencia = ""
                 }
                 if (isNetworkAvailable()) {
-                    subirEvidenciaCloud(uri, "epp") { url -> urlEvidencia = url }
+                    subirEvidenciaCloud(uri, "epp") { url ->
+                        urlEvidencia = url
+                        eppDraftUrlEvidencia = url
+                    }
                 }
             }
         })
+        if (uriLocalEvidencia.isNotBlank()) {
+            mostrarPrevisualizacionEvidencia(root, uriLocalEvidencia) {
+                uriLocalEvidencia = ""
+                urlEvidencia = ""
+                eppDraftUriEvidencia = ""
+                eppDraftUrlEvidencia = ""
+            }
+        }
 
         root.addView(gestionNuevoEntradaRow(
             onNuevo = {
+                guardarDraftEpp()
                 showDialogNuevoProducto("EPP") { c, i, r ->
-                    showEPPForm(pItem = i, pCant = pCant, pSol = pSol, pCat = c, pRef = r)
+                    showEPPForm(
+                        pItem = i,
+                        pCant = eppDraftCantidad,
+                        pSol = eppDraftSolicitante,
+                        pCat = c,
+                        pRef = r,
+                    )
                 }
             },
             onEntrada = {
                 val itemVal = itemSpinner.selectedItem?.toString() ?: ""
                 val refVal = refSpinner.selectedItem?.toString() ?: ""
                 if (!esPlaceholderSpinnerDependiente(itemVal)) {
-                    showDialogEntradaStock("EPP", itemVal, refVal) { showEPPForm(pItem, pCant, pSol) }
+                    guardarDraftEpp()
+                    showDialogEntradaStock("EPP", itemVal, refVal) {
+                        showEPPForm(
+                            pItem = itemVal,
+                            pCant = eppDraftCantidad,
+                            pSol = eppDraftSolicitante,
+                            pCat = categoriaSeleccionada,
+                            pRef = refVal,
+                        )
+                    }
                 } else {
                     Toast.makeText(this, "Selecciona un ítem primero", Toast.LENGTH_SHORT).show()
                 }
             },
         ))
 
-        root.addView(primaryButton("Registrar Entrega") {
-            val codigoPreferido = codigoInternoValidadoParaSalida(codigoInterno, codigoInternoSeleccionado)
-            val itemVal = itemSpinner.selectedItem?.toString() ?: ""
-            val refVal = refSpinner.selectedItem?.toString() ?: ""
-            
-            if (esPlaceholderSpinnerDependiente(itemVal) || esPlaceholderSpinnerDependiente(refVal)) {
-                Toast.makeText(this, "Selecciona un ítem y referencia válidos", Toast.LENGTH_SHORT).show()
-                return@primaryButton
-            }
-
-            val nombreItem = "$itemVal - $refVal"
-            val nombreSolicitante = solicitante.text.toString().trim()
-            if (!required(solicitante, cantidad)) return@primaryButton
-
-            val registrar: (String) -> Unit = { fotoFinal ->
-            val mov = Movimiento(
-                fecha = now(),
-                modulo = "EPP",
-                tipoMovimiento = "Salida",
-                item = nombreItem,
-                referencia = refVal,
-                cantidad = cantidad.text.toString(),
-                unidad = "Unidad",
-                solicitante = nombreSolicitante,
-                labor = "Protección Personal",
-                observaciones = observaciones.text.toString()
-            )
-            registrarSalidaCloudPrimero(
-                mov = mov,
-                cantidadNumerica = cantidad.text.toString().toDoubleOrNull() ?: 0.0,
-                codigoInternoPreferido = codigoPreferido,
-                itemBase = itemVal,
-                fotoUrl = fotoFinal,
-                onSuccess = {
-                    saved("EPP entregado con evidencia")
-                    cantidad.setText("")
-                    observaciones.setText("")
-                    urlEvidencia = ""
-                    uriLocalEvidencia = ""
-                    actualizarStockEpp(codigoPreferido)
-                    for (i in 0 until root.childCount) {
-                        if (root.getChildAt(i).tag == "PREVIEW_FOTO") {
-                            root.removeViewAt(i)
-                            break
-                        }
-                    }
+        fun limpiarPreviewEvidenciaEpp() {
+            var indice = 0
+            while (indice < root.childCount) {
+                if (root.getChildAt(indice).tag == "PREVIEW_FOTO") {
+                    root.removeViewAt(indice)
+                } else {
+                    indice++
                 }
+            }
+        }
+
+        fun lineaEppDesdeFormulario(): EppEntregaLinea? {
+            val producto = productoEppSeleccionado
+            val categoriaVal = catSpinner.selectedItem?.toString().orEmpty()
+            val itemVal = itemSpinner.selectedItem?.toString().orEmpty()
+            val refVal = refSpinner.selectedItem?.toString().orEmpty()
+            if (esPlaceholderSpinnerDependiente(categoriaVal) || esPlaceholderSpinnerDependiente(itemVal) || esPlaceholderSpinnerDependiente(refVal)) {
+                Toast.makeText(this, "Selecciona un EPP valido", Toast.LENGTH_SHORT).show()
+                return null
+            }
+            if (!stockEppVerificado || producto == null || documentoEppSeleccionado.isBlank()) {
+                Toast.makeText(this, "Espera la consulta de stock antes de agregar", Toast.LENGTH_SHORT).show()
+                return null
+            }
+            val cantidadTexto = cantidad.text.toString().replace(",", ".")
+            val cantidadDecimal = cantidadTexto.toDoubleOrNull() ?: 0.0
+            val cantidadEntera = if (cantidadDecimal % 1.0 == 0.0) cantidadDecimal.toInt() else null
+            if (cantidad.text.toString().isBlank() || cantidadDecimal <= 0.0 || cantidadEntera == null || cantidadDecimal != cantidadEntera.toDouble()) {
+                Toast.makeText(this, "En EPP la cantidad debe ser un numero entero mayor a cero", Toast.LENGTH_SHORT).show()
+                return null
+            }
+            if (cantidadEntera > stockEppDisponible) {
+                Toast.makeText(this, "Stock insuficiente para $itemVal. Disponible: ${cantidadEppLegible(stockEppDisponible)} Unidad", Toast.LENGTH_LONG).show()
+                return null
+            }
+            val codigoPreferido = codigoInternoValidadoParaSalida(codigoInterno, codigoInternoSeleccionado)
+            if (codigoPreferido.isNotBlank() &&
+                normalizarCodigoInternoSinActividad(codigoPreferido) != normalizarCodigoInternoSinActividad(producto.codigoInterno)
+            ) {
+                Toast.makeText(this, "El codigo no coincide con el EPP seleccionado", Toast.LENGTH_SHORT).show()
+                return null
+            }
+            return EppEntregaLinea(
+                categoria = categoriaVal,
+                item = itemVal,
+                referencia = refVal,
+                codigoInterno = producto.codigoInterno,
+                documentoId = producto.documentoId,
+                cantidad = cantidadEntera,
+                stockDisponible = stockEppDisponible,
             )
         }
 
-            fun registrarConEvidenciaLista() {
+        val eppAgregados = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(4))
+        }
+
+        var botonAgregar: Button? = null
+        var botonRegistrarTodos: Button? = null
+
+        fun actualizarBotonesEpp() {
+            botonAgregar?.text = if (eppEntregaEditandoId != null) "Actualizar EPP" else "Agregar a la entrega"
+            botonRegistrarTodos?.isEnabled = eppEntregaLineas.isNotEmpty() && !eppEntregaProcesando
+            botonRegistrarTodos?.alpha = if (eppEntregaLineas.isNotEmpty() && !eppEntregaProcesando) 1f else 0.55f
+        }
+
+        fun aplicarLineaEppEnFormulario(linea: EppEntregaLinea) {
+            eppEntregaEditandoId = linea.id
+            categoriaSeleccionada = linea.categoria
+            itemSeleccionado = linea.item
+            referenciaSeleccionada = linea.referencia
+            eppDraftCategoria = linea.categoria
+            eppDraftItem = linea.item
+            eppDraftReferencia = linea.referencia
+            seleccionarProductoEnSpinners(
+                catSpinner,
+                itemSpinner,
+                refSpinner,
+                catalogoEppComoMapAny(),
+                linea.categoria,
+                linea.item,
+                linea.referencia,
+            ) {
+                codigoInternoSeleccionado = linea.codigoInterno
+                documentoEppSeleccionado = linea.documentoId
+                codigoInterno.setText(linea.codigoInterno, false)
+                val consulta = ++stockConsultaActual
+                buscarExistenciaPorCodigoInterno(linea.codigoInterno, "EPP", { producto ->
+                    if (consulta != stockConsultaActual) return@buscarExistenciaPorCodigoInterno
+                    if (producto?.documentoId == linea.documentoId) {
+                        mostrarStock(producto)
+                    } else {
+                        productoEppSeleccionado = null
+                        stockEppVerificado = false
+                    }
+                }, {
+                    if (consulta != stockConsultaActual) return@buscarExistenciaPorCodigoInterno
+                    productoEppSeleccionado = null
+                    stockEppVerificado = false
+                })
+            }
+            cantidad.setText(linea.cantidad.toString())
+            actualizarBotonesEpp()
+            Toast.makeText(this, "Edita la linea y actualiza el EPP", Toast.LENGTH_SHORT).show()
+        }
+
+        fun renderEppAgregados() {
+            eppAgregados.removeAllViews()
+            eppAgregados.addView(TextView(this).apply {
+                text = "EPP agregados"
+                textSize = 15f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setTextColor(verdeOscuro)
+                setPadding(0, dp(8), 0, dp(4))
+            })
+
+            if (eppEntregaLineas.isEmpty()) {
+                eppAgregados.addView(TextView(this).apply {
+                    text = "Aun no hay EPP en esta entrega."
+                    textSize = 13f
+                    setTextColor(gris)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    background = arlesRoundedBackground(Color.WHITE, ArlesPalette.line, 10)
+                })
+                actualizarBotonesEpp()
+                return
+            }
+
+            eppEntregaLineas.forEachIndexed { index, linea ->
+                val cardLinea = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = arlesRoundedBackground(Color.WHITE, ArlesPalette.line, 12)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ).apply { setMargins(0, dp(4), 0, dp(8)) }
+                }
+                cardLinea.addView(TextView(this).apply {
+                    text = "${index + 1}. ${linea.item}"
+                    textSize = 14f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    setTextColor(texto)
+                })
+                cardLinea.addView(TextView(this).apply {
+                    text = listOf(
+                        "Talla/ref: ${linea.referencia}",
+                        "Codigo: ${linea.codigoInterno}",
+                        "Documento: ${linea.documentoId}",
+                        "Cantidad: ${linea.cantidad} Unidad",
+                        "Stock: ${cantidadEppLegible(linea.stockDisponible)} Unidad",
+                    ).joinToString("\n")
+                    textSize = 12.5f
+                    setTextColor(gris)
+                    setPadding(0, dp(4), 0, dp(8))
+                })
+                val acciones = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val editar = outlineButton("Editar") { aplicarLineaEppEnFormulario(linea) }
+                val eliminar = outlineButton("Eliminar") {
+                    eppEntregaLineas.removeAll { it.id == linea.id }
+                    if (eppEntregaEditandoId == linea.id) eppEntregaEditandoId = null
+                    renderEppAgregados()
+                }.apply { setTextColor(Color.RED) }
+                acciones.addView(editar, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) })
+                acciones.addView(eliminar, LinearLayout.LayoutParams(0, dp(44), 1f))
+                cardLinea.addView(acciones)
+                eppAgregados.addView(cardLinea)
+            }
+            actualizarBotonesEpp()
+        }
+
+        fun limpiarSeleccionEppParaSiguiente() {
+            cantidad.setText("1")
+            eppDraftCantidad = "1"
+            codigoInternoSeleccionado = ""
+            documentoEppSeleccionado = ""
+            productoEppSeleccionado = null
+            codigoInterno.setText("", false)
+            stockConsultaActual++
+            stockEppDisponible = 0.0
+            stockEppVerificado = false
+            stockDisponible.text = "Disponible: selecciona un item para consultar stock"
+            stockDisponible.setTextColor(gris)
+            guardarDraftEpp()
+            actualizarStockEpp()
+        }
+
+        botonAgregar = primaryButton("Agregar a la entrega") {
+            guardarDraftEpp()
+            val nuevaLinea = lineaEppDesdeFormulario() ?: return@primaryButton
+            val idEditando = eppEntregaEditandoId
+            val indiceEditando = idEditando?.let { id -> eppEntregaLineas.indexOfFirst { it.id == id } } ?: -1
+            val indiceDuplicado = eppEntregaLineas.indexOfFirst { it.clave() == nuevaLinea.clave() && it.id != idEditando }
+            val cantidadTotal = nuevaLinea.cantidad + if (indiceDuplicado >= 0) eppEntregaLineas[indiceDuplicado].cantidad else 0
+
+            if (cantidadTotal > nuevaLinea.stockDisponible) {
+                Toast.makeText(this, "Stock insuficiente para la cantidad acumulada de ${nuevaLinea.item}", Toast.LENGTH_LONG).show()
+                return@primaryButton
+            }
+
+            when {
+                indiceEditando >= 0 && indiceDuplicado >= 0 -> {
+                    eppEntregaLineas[indiceDuplicado] = eppEntregaLineas[indiceDuplicado].copy(
+                        cantidad = cantidadTotal,
+                        stockDisponible = nuevaLinea.stockDisponible,
+                    )
+                    eppEntregaLineas.removeAt(indiceEditando)
+                }
+                indiceEditando >= 0 -> {
+                    eppEntregaLineas[indiceEditando] = nuevaLinea.copy(id = eppEntregaLineas[indiceEditando].id)
+                }
+                indiceDuplicado >= 0 -> {
+                    eppEntregaLineas[indiceDuplicado] = eppEntregaLineas[indiceDuplicado].copy(
+                        cantidad = cantidadTotal,
+                        stockDisponible = nuevaLinea.stockDisponible,
+                    )
+                }
+                else -> eppEntregaLineas.add(nuevaLinea)
+            }
+
+            eppEntregaEditandoId = null
+            renderEppAgregados()
+            limpiarSeleccionEppParaSiguiente()
+            Toast.makeText(this, "EPP agregado a la entrega", Toast.LENGTH_SHORT).show()
+        }
+        botonAgregar?.let { root.addView(it) }
+        root.addView(eppAgregados)
+
+        fun lineasConAlertaFrecuencia(nombreSolicitante: String): List<String> {
+            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+            val hoy = Date()
+            return eppEntregaLineas.mapNotNull { linea ->
+                val nombreItem = "${linea.item} - ${linea.referencia}"
+                val ultimaFechaStr = db.buscarUltimaEntregaEPP(nombreSolicitante, nombreItem) ?: return@mapNotNull null
+                try {
+                    val ultimaFecha = sdf.parse(ultimaFechaStr) ?: return@mapNotNull null
+                    val dias = (hoy.time - ultimaFecha.time) / (1000 * 60 * 60 * 24)
+                    if (dias < 30) "$nombreItem: hace $dias dias ($ultimaFechaStr)" else null
+                } catch (e: Exception) {
+                    android.util.Log.e("EPP", "Error validando fecha", e)
+                    null
+                }
+            }
+        }
+
+        botonRegistrarTodos = primaryButton("Registrar todos") { view ->
+            if (eppEntregaProcesando) return@primaryButton
+            guardarDraftEpp()
+            if (eppEntregaLineas.isEmpty()) {
+                Toast.makeText(this, "Agrega al menos un EPP", Toast.LENGTH_SHORT).show()
+                return@primaryButton
+            }
+            if (!required(solicitante)) return@primaryButton
+
+            fun finalizarBloqueo() {
+                eppEntregaProcesando = false
+                (view as? Button)?.text = "Registrar todos"
+                actualizarBotonesEpp()
+            }
+
+            fun registrarConEvidencia(fotoFinal: String) {
+                val lineas = eppEntregaLineas.toList()
+                registrarEntregaMultipleEpp(
+                    lineas = lineas,
+                    solicitante = solicitante.text.toString().trim(),
+                    observaciones = observaciones.text.toString(),
+                    fotoUrl = fotoFinal,
+                    onSuccess = {
+                        saved("Entrega EPP registrada con ${lineas.size} linea(s)")
+                        limpiarEstadoEntregaEpp()
+                        urlEvidencia = ""
+                        uriLocalEvidencia = ""
+                        cantidad.setText("1")
+                        solicitante.setText("")
+                        observaciones.setText("")
+                        limpiarPreviewEvidenciaEpp()
+                        renderEppAgregados()
+                        actualizarStockEpp()
+                        finalizarBloqueo()
+                    },
+                    onFailure = { e ->
+                        Toast.makeText(this, e.localizedMessage ?: "No se pudo registrar la entrega EPP", Toast.LENGTH_LONG).show()
+                        finalizarBloqueo()
+                    },
+                )
+            }
+
+            fun continuarRegistro() {
+                val evidenciaLocal = uriLocalEvidencia.ifBlank {
+                    urlEvidencia.takeIf { evidenciaEsUriLocal(it) }.orEmpty()
+                }
                 when {
-                    urlEvidencia.isNotBlank() -> registrar(urlEvidencia)
-                    uriLocalEvidencia.isNotBlank() && isNetworkAvailable() -> {
+                    urlEvidencia.isNotBlank() && !evidenciaEsUriLocal(urlEvidencia) -> registrarConEvidencia(urlEvidencia)
+                    evidenciaLocal.isNotBlank() && isNetworkAvailable() -> {
                         Toast.makeText(this, "Subiendo evidencia EPP...", Toast.LENGTH_SHORT).show()
-                        subirEvidenciaCloud(uriLocalEvidencia, "epp") { url ->
-                            urlEvidencia = url
-                            registrar(url)
+                        subirEvidenciaCloud(evidenciaLocal, "epp") { url ->
+                            if (url.isBlank()) {
+                                Toast.makeText(this, "No se pudo subir la evidencia", Toast.LENGTH_LONG).show()
+                                finalizarBloqueo()
+                            } else {
+                                urlEvidencia = url
+                                eppDraftUrlEvidencia = url
+                                registrarConEvidencia(url)
+                            }
                         }
                     }
-                    uriLocalEvidencia.isNotBlank() -> registrar(uriLocalEvidencia)
-                    else -> registrar("")
+                    evidenciaLocal.isNotBlank() -> {
+                        Toast.makeText(this, "Conecta a internet para subir la evidencia y registrar todo", Toast.LENGTH_LONG).show()
+                        finalizarBloqueo()
+                    }
+                    else -> registrarConEvidencia("")
                 }
             }
 
-            val ultimaFechaStr = db.buscarUltimaEntregaEPP(nombreSolicitante, nombreItem)
-            if (ultimaFechaStr != null) {
-                try {
-                    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-                    val ultimaFecha = sdf.parse(ultimaFechaStr)
-                    val hoy = Date()
-                    if (ultimaFecha != null) {
-                        val diff = hoy.time - ultimaFecha.time
-                        val dias = diff / (1000 * 60 * 60 * 24)
-                        if (dias < 30) {
-                            AlertDialog.Builder(this)
-                                .setTitle("¡Alerta de frecuencia!")
-                                .setMessage("El trabajador $nombreSolicitante ya recibió $nombreItem hace solo $dias días (Fecha: $ultimaFechaStr).\n\n¿Deseas registrar la entrega de todas formas?")
-                                .setPositiveButton("Sí, registrar") { _, _ -> registrarConEvidenciaLista() }
-                                .setNegativeButton("No, cancelar", null)
-                                .show()
-                            return@primaryButton
-                        }
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("EPP", "Error validando fecha", e)
-                }
+            eppEntregaProcesando = true
+            (view as? Button)?.apply {
+                isEnabled = false
+                alpha = 0.55f
+                text = "Registrando..."
             }
-            registrarConEvidenciaLista()
-        })
+
+            val nombreSolicitante = solicitante.text.toString().trim()
+            val alertas = lineasConAlertaFrecuencia(nombreSolicitante)
+            if (alertas.isNotEmpty()) {
+                AlertDialog.Builder(this)
+                    .setTitle("Alerta de frecuencia")
+                    .setMessage(
+                        "El trabajador $nombreSolicitante recibio estos EPP durante los ultimos 30 dias:\n\n" +
+                            alertas.joinToString("\n") +
+                            "\n\nDeseas registrar toda la entrega de todas formas?"
+                    )
+                    .setPositiveButton("Sí, registrar todos") { _, _ -> continuarRegistro() }
+                    .setNegativeButton("No, cancelar") { _, _ -> finalizarBloqueo() }
+                    .setOnCancelListener { finalizarBloqueo() }
+                    .show()
+            } else {
+                continuarRegistro()
+            }
+        }
+        botonRegistrarTodos?.let { root.addView(it) }
+        renderEppAgregados()
     }
+
+private fun MainActivity.registrarEntregaMultipleEpp(
+    lineas: List<EppEntregaLinea>,
+    solicitante: String,
+    observaciones: String,
+    fotoUrl: String,
+    onSuccess: (() -> Unit)? = null,
+    onFailure: ((Exception) -> Unit)? = null,
+) {
+    if (lineas.isEmpty()) {
+        onFailure?.invoke(IllegalStateException("No hay EPP para registrar"))
+        return
+    }
+
+    if (!isNetworkAvailable()) {
+        onFailure?.invoke(IllegalStateException("Sin conexion no se puede validar stock y registrar todo o nada"))
+        return
+    }
+
+    val fechaEntrega = now()
+    val uid = auth.currentUser?.uid ?: ""
+    val entregaId = "EPP-${System.currentTimeMillis()}"
+
+    firestore.runTransaction { transaction ->
+        val refsPorDoc = lineas.associate { linea ->
+            if (linea.documentoId.isBlank()) {
+                throw IllegalStateException("Documento faltante para ${linea.item} / ${linea.referencia}")
+            }
+            linea.documentoId to firestore.collection("existencias").document(linea.documentoId)
+        }
+        val snapshotsPorDoc = mutableMapOf<String, DocumentSnapshot>()
+        val stockInicialPorDoc = mutableMapOf<String, Double>()
+        val totalSolicitadoPorDoc = lineas
+            .groupBy { it.documentoId }
+            .mapValues { (_, docs) -> docs.sumOf { it.cantidad.toDouble() } }
+
+        refsPorDoc.forEach { (docId, refDoc) ->
+            val snapshot = transaction.get(refDoc)
+            if (!snapshot.exists() || snapshot.getBoolean("activo") == false || !moduloCoincide(snapshot, "EPP")) {
+                throw IllegalStateException("Inventario EPP no disponible para $docId")
+            }
+            val linea = lineas.first { it.documentoId == docId }
+            val codigoDoc = codigoExistencia(snapshot)
+            val (itemDoc, refDocTexto) = eppItemBaseYTalla(nombreItemExistencia(snapshot), referenciaCatalogoExistencia(snapshot))
+            val codigoCoincide = normalizarCodigoInternoSinActividad(codigoDoc) == normalizarCodigoInternoSinActividad(linea.codigoInterno)
+            val itemCoincide = itemDoc.equals(linea.item, ignoreCase = true)
+            val refCoincide = refDocTexto.equals(linea.referencia, ignoreCase = true)
+            if (!codigoCoincide || !itemCoincide || !refCoincide) {
+                throw IllegalStateException("El documento $docId no coincide con ${linea.item} / ${linea.referencia}")
+            }
+
+            val stockActual = numeroDocumento(snapshot, "cantidad", "stock_actual")
+            val solicitado = totalSolicitadoPorDoc[docId] ?: 0.0
+            if (solicitado <= 0.0 || solicitado % 1.0 != 0.0) {
+                throw IllegalStateException("Cantidad invalida en ${linea.item} / ${linea.referencia}")
+            }
+            if (solicitado > stockActual) {
+                throw IllegalStateException(
+                    "Stock insuficiente en ${linea.item} / ${linea.referencia}. " +
+                        "Disponible: ${cantidadEppLegible(stockActual)}, solicitado: ${cantidadEppLegible(solicitado)}"
+                )
+            }
+            snapshotsPorDoc[docId] = snapshot
+            stockInicialPorDoc[docId] = stockActual
+        }
+
+        val stockRestantePorDoc = stockInicialPorDoc.toMutableMap()
+        lineas.forEachIndexed { index, linea ->
+            val snapshot = snapshotsPorDoc[linea.documentoId]
+                ?: throw IllegalStateException("Inventario EPP no disponible para ${linea.item}")
+            val refStock = refsPorDoc[linea.documentoId]
+                ?: throw IllegalStateException("Inventario EPP no disponible para ${linea.item}")
+            val stockAnterior = stockRestantePorDoc[linea.documentoId] ?: 0.0
+            val stockNuevo = stockAnterior - linea.cantidad
+            val codigoVisible = codigoExistencia(snapshot)
+            val codigoOriginal = codigoOriginalExistencia(snapshot)
+            val ubicacion = ubicacionExistencia(snapshot)
+            val nombreMovimiento = "${linea.item} - ${linea.referencia}"
+
+            transaction.set(refStock, mapOf(
+                "cantidad" to stockNuevo,
+                "stock_actual" to stockNuevo,
+                "ultima_fecha" to fechaEntrega,
+                "ultimo_solicitante" to solicitante,
+            ), SetOptions.merge())
+
+            transaction.set(firestore.collection("movimientos").document(), mapOf(
+                "fecha" to fechaEntrega,
+                "modulo" to "EPP",
+                "tipoMovimiento" to "Salida",
+                "item" to nombreMovimiento,
+                "item_base" to linea.item,
+                "categoria" to linea.categoria,
+                "referencia" to linea.referencia,
+                "cantidad" to linea.cantidad.toString(),
+                "unidad" to "Unidad",
+                "solicitante" to solicitante,
+                "labor" to "Protección Personal",
+                "observaciones" to observaciones,
+                "usuario" to uid,
+                "fotoUrl" to fotoUrl,
+                "codigo_interno" to codigoVisible,
+                "codigo_original" to codigoOriginal,
+                "documento_id" to linea.documentoId,
+                "producto_id" to linea.documentoId,
+                "ubicacion" to ubicacion,
+                "stock_actualizado" to true,
+                "stock_anterior" to stockAnterior,
+                "stock_nuevo" to stockNuevo,
+                "entrega_id" to entregaId,
+                "linea_entrega" to (index + 1),
+                "total_lineas" to lineas.size,
+            ))
+            stockRestantePorDoc[linea.documentoId] = stockNuevo
+        }
+        lineas.size
+    }.addOnSuccessListener {
+        onSuccess?.invoke()
+    }.addOnFailureListener { e ->
+        onFailure?.invoke(e)
+    }
+}
 
 internal fun MainActivity.guardarEPP(
         item: String,
