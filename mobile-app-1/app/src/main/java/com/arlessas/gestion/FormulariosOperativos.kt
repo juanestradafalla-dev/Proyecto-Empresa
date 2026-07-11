@@ -1974,7 +1974,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
     }
 
 internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
-        val tipos = listOf("Gasolina", "ACPM", "Urea")
+        val tipos = tiposCombustible()
         var tipoSeleccionado = tipos.firstOrNull { it.equals(pCat, ignoreCase = true) } ?: "Gasolina"
         currentScreenRenderer = {
             showCombustibleForm(
@@ -2027,6 +2027,9 @@ internal fun MainActivity.showCombustibleForm(pItem: String = "", pCant: String 
             val boton = secondaryButton(nombre) { seleccionarTipo(nombre) }.apply {
                 textSize = 13f
                 isAllCaps = false
+                minWidth = 0
+                minHeight = 0
+                setPadding(dp(4), 0, dp(4), 0)
             }
             botonesTipo[nombre] = boton
             selectorTipo.addView(
