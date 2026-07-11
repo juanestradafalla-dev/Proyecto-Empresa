@@ -33,7 +33,7 @@ internal object AseoCanonicos {
     const val COLECCION = "productos_aseo"
     const val CATEGORIA_PRINCIPAL = "Productos de aseo"
 
-    val items: List<AseoCanonico> = listOf(
+    private val itemsBase: List<AseoCanonico> = listOf(
         AseoCanonico("H02-001", 2, "Desengrasantes", "DESENGRASANTE INDUSTRIAL MIDIA 500ML", "ML", 3.0),
         AseoCanonico("H02-002", 2, "Ceras y pisos", "CERA ROJA ALKOSTO", "UNIDAD", 2.0),
         AseoCanonico("H02-003", 2, "Jabones y detergentes", "JABON REY EN BARRA", "UNIDAD", 17.0),
@@ -80,6 +80,16 @@ internal object AseoCanonicos {
         AseoCanonico("H00-007", 0, "Limpieza general", "FABULOSO", "UNIDAD", 3.0),
         AseoCanonico("H00-008", 0, "Jabones y detergentes", "JABON LIQUIDO CAPIBEL", "UNIDAD", 5.0),
     )
+
+    private val itemsPersonalizados = linkedMapOf<String, AseoCanonico>()
+    val items: List<AseoCanonico>
+        get() = itemsBase + itemsPersonalizados.values
+
+    fun registrarProductoPersonalizado(producto: AseoCanonico) {
+        val codigo = normalizarCodigo(producto.codigoInterno)
+        if (itemsBase.any { normalizarCodigo(it.codigoInterno) == codigo }) return
+        itemsPersonalizados[codigo] = producto.copy(codigoInterno = codigo)
+    }
 
     private fun norm(value: String): String = value.trim().uppercase(Locale.getDefault())
     private fun codigoNorm(value: String): String = norm(value).replace("-", "")

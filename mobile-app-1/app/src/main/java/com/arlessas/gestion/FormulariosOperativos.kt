@@ -1850,7 +1850,7 @@ internal fun MainActivity.guardarEPP(
 
 internal fun MainActivity.showAseoForm(pItem: String = "", pCant: String = "", pSol: String = "", pLab: String = "", pCat: String = "") {
         try {
-            showAseoFormInterno(pItem, pCant, pSol, pLab, pCat)
+            showAseoFormMultipleInterno(pItem, pCant, pSol, pLab, pCat)
         } catch (e: Exception) {
             android.util.Log.e("ArlesGestion", "Error abriendo ASEO", e)
             Toast.makeText(this, "No se pudo abrir ASEO: ${e.localizedMessage ?: "error inesperado"}", Toast.LENGTH_LONG).show()
