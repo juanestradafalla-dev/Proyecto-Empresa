@@ -4,6 +4,7 @@
 package com.arlessas.gestion
 
 import android.app.AlertDialog
+import android.app.Dialog
 import android.graphics.Color
 import android.view.View
 import android.widget.ArrayAdapter
@@ -47,6 +48,45 @@ private var aseoDraftArea = ""
 private var aseoDraftObservaciones = ""
 private var aseoDraftUrlEvidencia = ""
 private var aseoDraftUriEvidencia = ""
+private var aseoProductosRemotosCargados = false
+private var aseoProductosRemotosCargando = false
+
+private fun MainActivity.registrarProductoAseoEnCatalogoLocal(producto: AseoCanonico) {
+    AseoCanonicos.registrarProductoPersonalizado(producto)
+    val moduloMap = catalogoCargado.getOrPut(AseoCanonicos.MODULO) { mutableMapOf() }
+    val categoriaMap = moduloMap.getOrPut(producto.categoria) { mutableMapOf() }
+    val referencias = categoriaMap.getOrPut(producto.producto) { mutableListOf() }
+    if (!referencias.contains("N/A")) referencias.add("N/A")
+}
+
+private fun MainActivity.cargarProductosAseoPersonalizados() {
+    if (aseoProductosRemotosCargados || aseoProductosRemotosCargando || !isNetworkAvailable()) return
+    aseoProductosRemotosCargando = true
+    firestore.collection(AseoCanonicos.COLECCION).get()
+        .addOnSuccessListener { snapshot ->
+            var agregados = 0
+            snapshot.documents.forEach { documento ->
+                val opcion = aseoUbicacionDesdeDoc(documento) ?: return@forEach
+                val yaExistia = AseoCanonicos.buscarPorDocumento(opcion.documentoId) != null
+                val producto = AseoCanonico(
+                    codigoInterno = opcion.documentoId,
+                    piso = documento.getLong("piso")?.toInt() ?: AseoCanonicos.pisoDesdeCodigo(opcion.codigoOriginal),
+                    categoria = opcion.categoria,
+                    producto = opcion.item,
+                    unidad = opcion.unidad,
+                    stockActual = opcion.cantidad,
+                )
+                registrarProductoAseoEnCatalogoLocal(producto)
+                if (!yaExistia) agregados++
+            }
+            aseoProductosRemotosCargando = false
+            aseoProductosRemotosCargados = true
+            if (agregados > 0 && currentScreenId.startsWith("ASEO|")) showAseoForm()
+        }
+        .addOnFailureListener {
+            aseoProductosRemotosCargando = false
+        }
+}
 
 private fun limpiarEstadoEntregaAseo() {
     aseoEntregaLineas.clear()
@@ -77,6 +117,7 @@ internal fun MainActivity.showAseoFormMultipleInterno(
     pLab: String = "",
     pCat: String = "",
 ) {
+    cargarProductosAseoPersonalizados()
     if (pCat.isNotBlank()) aseoDraftCategoria = pCat
     if (pItem.isNotBlank()) aseoDraftProducto = pItem
     if (pCant.isNotBlank()) aseoDraftCantidad = pCant
@@ -115,7 +156,7 @@ internal fun MainActivity.showAseoFormMultipleInterno(
     }
     val root = baseScreen(
         "ASEO",
-        "Registra salidas, entradas y traslados internos por area.",
+        "Registra salidas y entradas de productos por area.",
         backAction = { salirAseo() },
     )
 
@@ -152,7 +193,6 @@ internal fun MainActivity.showAseoFormMultipleInterno(
     var consultaStockActual = 0
     var eventosSpinnerActivos = false
     var botonesListos = false
-    lateinit var btnTraslado: Button
     lateinit var btnEntrada: Button
 
     fun escribirCodigoSinBusqueda(codigo: String) {
@@ -198,9 +238,8 @@ internal fun MainActivity.showAseoFormMultipleInterno(
         }
         stockLabel.setTextColor(if ((ubicacionSeleccionada?.cantidad ?: total) <= 0.0) Color.RED else verdeOscuro)
         if (!botonesListos) return
-        btnTraslado.isEnabled = ubicacionesActuales.isNotEmpty()
         btnEntrada.isEnabled = ubicacionSeleccionada != null
-        listOf(btnTraslado, btnEntrada).forEach { it.alpha = if (it.isEnabled) 1f else 0.55f }
+        btnEntrada.alpha = if (btnEntrada.isEnabled) 1f else 0.55f
     }
 
     fun seleccionarUbicacion(opcion: AseoUbicacionStock?, token: String = tokenSeleccion()) {
@@ -407,42 +446,7 @@ internal fun MainActivity.showAseoFormMultipleInterno(
     observar(area) { aseoDraftArea = it }
     observar(observaciones) { aseoDraftObservaciones = it }
 
-    btnTraslado = secondaryButton("Traslado interno") {
-        guardarDraft()
-        showDialogUbicacionesAseo(
-            opciones = ubicacionesActuales,
-            onSelected = { seleccionarUbicacion(it) },
-            onTransferDone = {
-                val seleccion = ubicacionSeleccionada
-                if (seleccion != null) {
-                    cargarUbicaciones(
-                        seleccion.codigoOriginal,
-                        seleccion.item,
-                        seleccion.ubicacion,
-                        seleccion.documentoId,
-                    )
-                }
-            },
-        )
-    }.apply { isEnabled = false; alpha = 0.55f }
-    root.addView(btnTraslado)
-
-    btnEntrada = secondaryButton("Nueva entrada") {
-        guardarDraft()
-        val seleccion = ubicacionSeleccionada ?: return@secondaryButton
-        showDialogEntradaStockAseo(seleccion) {
-            cargarUbicaciones(
-                seleccion.codigoOriginal,
-                seleccion.item,
-                seleccion.ubicacion,
-                seleccion.documentoId,
-            )
-        }
-    }.apply { isEnabled = false; alpha = 0.55f }
-    botonesListos = true
-    actualizarResumen()
-
-    root.addView(primaryButton("Tomar evidencia") {
+    root.addView(evidenceButton {
         capturarEvidencia { uri ->
             uriLocalEvidencia = uri
             urlEvidencia = ""
@@ -455,7 +459,7 @@ internal fun MainActivity.showAseoFormMultipleInterno(
                 aseoDraftUrlEvidencia = ""
             }
         }
-    }.apply { setBackgroundColor(Color.rgb(100, 100, 110)) })
+    })
     if (uriLocalEvidencia.isNotBlank()) {
         mostrarPrevisualizacionEvidencia(root, uriLocalEvidencia) {
             uriLocalEvidencia = ""
@@ -465,13 +469,48 @@ internal fun MainActivity.showAseoFormMultipleInterno(
         }
     }
 
-    val gestionRow = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        weightSum = 1f
-        setPadding(0, dp(10), 0, dp(10))
-    }
-    gestionRow.addView(btnEntrada, LinearLayout.LayoutParams(0, dp(54), 1f))
-    root.addView(gestionRow)
+    val gestionAcciones = gestionNuevoEntradaRow(
+        onNuevo = {
+            guardarDraft()
+            showDialogNuevoProductoAseoMultiple { nuevo ->
+                aseoDraftCategoria = nuevo.categoria
+                aseoDraftProducto = nuevo.producto
+                seleccionarSpinners(nuevo.categoria, nuevo.producto) {
+                    documentoSeleccionado = nuevo.documentoId
+                    codigoOriginalSeleccionado = nuevo.codigoOriginal
+                    escribirCodigoSinBusqueda(nuevo.codigoOriginal)
+                    cargarUbicaciones(
+                        nuevo.codigoOriginal,
+                        nuevo.producto,
+                        nuevo.ubicacion,
+                        nuevo.documentoId,
+                    )
+                }
+            }
+        },
+        onEntrada = {
+            guardarDraft()
+            val seleccion = ubicacionSeleccionada
+            if (seleccion == null) {
+                Toast.makeText(this, "Selecciona un producto primero", Toast.LENGTH_SHORT).show()
+            } else {
+                showDialogEntradaStockAseo(seleccion) {
+                    cargarUbicaciones(
+                        seleccion.codigoOriginal,
+                        seleccion.item,
+                        seleccion.ubicacion,
+                        seleccion.documentoId,
+                    )
+                }
+            }
+        },
+    )
+    btnEntrada = gestionAcciones.getChildAt(1) as Button
+    btnEntrada.isEnabled = false
+    btnEntrada.alpha = 0.55f
+    botonesListos = true
+    root.addView(gestionAcciones)
+    actualizarResumen()
 
     fun lineaDesdeFormulario(): AseoEntregaLinea? {
         val categoria = categoriaSpinner.selectedItem?.toString().orEmpty()
@@ -732,6 +771,93 @@ internal fun MainActivity.showAseoFormMultipleInterno(
     }
     botonRegistrar?.let { root.addView(it) }
     renderProductos()
+}
+
+private fun MainActivity.showDialogNuevoProductoAseoMultiple(onDone: (AseoCanonico) -> Unit) {
+    val dialog = Dialog(this)
+    applyDialogWindow(dialog)
+    val root = dialogShell()
+    root.addView(TextView(this).apply {
+        text = "Nuevo producto ASEO"
+        textSize = 18f
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        setTextColor(verdeOscuro)
+        setPadding(0, 0, 0, dp(12))
+    })
+
+    val categorias = AseoCanonicos.items.map { it.categoria }.distinct().sorted()
+        .ifEmpty { listOf(AseoCanonicos.CATEGORIA_PRINCIPAL) }
+    val categoriaExistente = spinner(root, "Categoria existente", categorias)
+    val categoriaNueva = field(root, "Categoria nueva", "Opcional")
+    val producto = field(root, "Producto *", "Nombre del producto")
+    val codigo = field(root, "Codigo interno *", "Ej: H06-001")
+    val piso = field(root, "Piso *", "Ej: 6", number = true)
+    val unidad = field(root, "Unidad *", "UNIDAD, PAR, PAQUETE, ROLLO, ML...")
+
+    lateinit var crear: Button
+    crear = primaryButton("Crear producto ASEO") {
+        if (!required(producto, codigo, piso, unidad)) return@primaryButton
+        if (!isNetworkAvailable()) {
+            Toast.makeText(this, "Necesitas conexion para crear el producto ASEO", Toast.LENGTH_LONG).show()
+            return@primaryButton
+        }
+
+        val codigoNormalizado = AseoCanonicos.normalizarCodigo(codigo.text.toString())
+        val pisoValor = piso.text.toString().toIntOrNull()
+        val categoriaValor = categoriaNueva.text.toString().trim()
+            .ifBlank { categoriaExistente.selectedItem?.toString().orEmpty() }
+        val productoValor = producto.text.toString().trim()
+        val unidadValor = unidad.text.toString().trim().uppercase().replace(Regex("\\s+"), " ")
+        if (codigoNormalizado.isBlank() || categoriaValor.isBlank() || productoValor.isBlank() || pisoValor == null || pisoValor < 0) {
+            Toast.makeText(this, "Completa codigo, categoria, producto, piso y unidad validos", Toast.LENGTH_LONG).show()
+            return@primaryButton
+        }
+
+        val nuevo = AseoCanonico(
+            codigoInterno = codigoNormalizado,
+            piso = pisoValor,
+            categoria = categoriaValor,
+            producto = productoValor,
+            unidad = unidadValor,
+            stockActual = 0.0,
+        )
+        crear.isEnabled = false
+        crear.alpha = 0.55f
+        crear.text = "Creando..."
+        val referencia = firestore.collection(AseoCanonicos.COLECCION).document(codigoNormalizado)
+        referencia.get()
+            .addOnSuccessListener { existente ->
+                if (existente.exists()) {
+                    crear.isEnabled = true
+                    crear.alpha = 1f
+                    crear.text = "Crear producto ASEO"
+                    Toast.makeText(this, "Ya existe un producto ASEO con el codigo $codigoNormalizado", Toast.LENGTH_LONG).show()
+                    return@addOnSuccessListener
+                }
+                referencia.set(nuevo.firestoreData(0.0))
+                    .addOnSuccessListener {
+                        registrarProductoAseoEnCatalogoLocal(nuevo)
+                        saved("Producto ASEO creado")
+                        dialog.dismiss()
+                        onDone(nuevo)
+                    }
+                    .addOnFailureListener { error ->
+                        crear.isEnabled = true
+                        crear.alpha = 1f
+                        crear.text = "Crear producto ASEO"
+                        Toast.makeText(this, error.localizedMessage ?: "No se pudo crear el producto ASEO", Toast.LENGTH_LONG).show()
+                    }
+            }
+            .addOnFailureListener { error ->
+                crear.isEnabled = true
+                crear.alpha = 1f
+                crear.text = "Crear producto ASEO"
+                Toast.makeText(this, error.localizedMessage ?: "No se pudo verificar el codigo ASEO", Toast.LENGTH_LONG).show()
+            }
+    }
+    root.addView(crear)
+    dialog.setContentView(root)
+    dialog.show()
 }
 
 private fun MainActivity.registrarSalidaMultipleAseo(
