@@ -1677,6 +1677,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         var stockDisponible = 0.0
         var unidadStockSeleccionada = "Unidad"
         var stockVerificado = false
+        var stockConsultaActual = 0
         var actualizandoSpinnerConsumibles = false
         var categoriaSeleccionada = pCat.ifBlank { consumiblesDraftCategoria }
         var itemSeleccionado = pItem.ifBlank { consumiblesDraftItem }
@@ -1779,6 +1780,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         }
 
         fun actualizarInfoStock() {
+            val consulta = ++stockConsultaActual
             val itemVal = itemSpinner.selectedItem?.toString() ?: ""
             val refVal = refSpinner.selectedItem?.toString() ?: ""
             if (!esPlaceholderConsumibles(itemVal) && !esPlaceholderConsumibles(refVal)) {
@@ -1791,14 +1793,17 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 val consultaItem = codigoValido.ifBlank { itemVal }
                 
                 consultarStockExistencia(consultaItem, refVal, { cant, unidadStock, productoVisible ->
+                    if (consulta != stockConsultaActual) return@consultarStockExistencia
                     if (codigoValido.isNotBlank() && !productoVisible.lowercase().contains(itemVal.lowercase())) {
                         consultarStockExistencia(itemVal, refVal, { c2, u2, _ ->
+                            if (consulta != stockConsultaActual) return@consultarStockExistencia
                             stockDisponible = c2
                             unidadStockSeleccionada = u2.ifBlank { "Unidad" }
                             stockVerificado = true
                             stockLabel.text = "Stock actual: $c2 $u2"
                             stockLabel.setTextColor(if (c2 <= 0) Color.RED else verdeOscuro)
                         }, {
+                            if (consulta != stockConsultaActual) return@consultarStockExistencia
                             stockDisponible = 0.0
                             unidadStockSeleccionada = "Unidad"
                             stockVerificado = false
@@ -1814,6 +1819,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                     stockLabel.text = "Stock actual: $cant $unidadStock"
                     stockLabel.setTextColor(if (cant <= 0) Color.RED else verdeOscuro)
                 }, {
+                    if (consulta != stockConsultaActual) return@consultarStockExistencia
                     stockLabel.text = "Stock no disponible (offline)"
                     stockDisponible = 0.0
                     unidadStockSeleccionada = "Unidad"
@@ -1829,6 +1835,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
         }
         
         setupCodigoInternoSalida(root, codigoInterno, "Consumibles") { producto ->
+            stockConsultaActual++
             codigoInternoSeleccionado = producto.codigoInterno
             documentoExistenciaSeleccionado = producto.documentoId
             stockDisponible = producto.cantidad
@@ -1846,6 +1853,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", i, r) { producto ->
                     codigoInternoSeleccionado = producto?.codigoInterno.orEmpty()
                     if (producto != null) {
+                        stockConsultaActual++
                         documentoExistenciaSeleccionado = producto.documentoId
                         stockDisponible = producto.cantidad
                         unidadStockSeleccionada = producto.unidad.ifBlank { "Unidad" }
@@ -1874,6 +1882,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                     autocompletarCodigoDesdeProducto(codigoInterno, "Consumibles", p.item, p.referencia) { encontrado ->
                         codigoInternoSeleccionado = encontrado?.codigoInterno.orEmpty()
                         if (encontrado != null) {
+                            stockConsultaActual++
                             documentoExistenciaSeleccionado = encontrado.documentoId
                             stockDisponible = encontrado.cantidad
                             unidadStockSeleccionada = encontrado.unidad.ifBlank { "Unidad" }
@@ -2171,6 +2180,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
                 codigoInternoSeleccionado = linea.codigoInterno
                 documentoExistenciaSeleccionado = linea.documentoId
                 codigoInterno.setText(linea.codigoInterno, false)
+                stockConsultaActual++
                 stockDisponible = linea.stockDisponible
                 unidadStockSeleccionada = linea.unidadStock
                 stockVerificado = true
@@ -2252,6 +2262,7 @@ internal fun MainActivity.showConsumiblesForm(pItem: String = "", pCant: String 
             codigoInternoSeleccionado = ""
             documentoExistenciaSeleccionado = ""
             codigoInterno.setText("", false)
+            stockConsultaActual++
             stockVerificado = false
             stockDisponible = 0.0
             unidadStockSeleccionada = "Unidad"
