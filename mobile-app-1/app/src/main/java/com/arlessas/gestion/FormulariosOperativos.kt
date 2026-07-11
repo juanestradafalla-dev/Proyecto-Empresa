@@ -154,7 +154,7 @@ private fun limpiarTagSpinnerDependiente(spinner: Spinner) {
     spinner.postDelayed({ if (spinner.tag == "SINCRO") spinner.tag = null }, 100)
 }
 
-internal fun MainActivity.showDotacionForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
+private fun MainActivity.showDotacionFormIndividualLegacy(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
         currentScreenRenderer = { showDotacionForm(pItem, pCant, pSol, pCat, pRef) }
         val root = baseScreen("Entrega de Dotación", "Control de vestuario y calzado para el personal.")
 
