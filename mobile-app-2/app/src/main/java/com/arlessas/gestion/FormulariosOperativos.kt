@@ -297,7 +297,7 @@ internal fun MainActivity.showQuimicoForm(pItem: String = "", pCant: String = ""
     }
 
 internal fun MainActivity.showLubricantesTallerForm(pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
-        showQuimicoInventarioForm(ModulosInventario.LUBRICANTES_TALLER, pItem, pCant, pSol, pCat, pRef)
+        showLubricantesMultipleInterno(pItem, pCant, pSol, pCat, pRef)
     }
 
 private fun MainActivity.showQuimicoInventarioForm(moduloOperativo: String, pItem: String = "", pCant: String = "", pSol: String = "", pCat: String = "", pRef: String = "") {
