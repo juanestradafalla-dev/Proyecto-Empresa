@@ -15,7 +15,10 @@ export const brand = {
   warning: '#c98213',
 } as const;
 
+export const inventoryValuationModule = 'Valoración de Inventario' as const;
+
 export const modules = [
+  inventoryValuationModule,
   'Consumibles',
   'Agroquimicos',
   'ASEO',
@@ -29,6 +32,7 @@ export const modules = [
 export type AppModule = (typeof modules)[number];
 
 export const moduleAccents: Record<AppModule, string> = {
+  [inventoryValuationModule]: '#145c3a',
   Consumibles: '#087b3b',
   Agroquimicos: '#108c66',
   ASEO: '#009a96',
@@ -40,6 +44,7 @@ export const moduleAccents: Record<AppModule, string> = {
 };
 
 export const moduleDescriptions: Record<AppModule, string> = {
+  [inventoryValuationModule]: 'Vista general del valor actual de todas las existencias.',
   Consumibles: 'Repuestos, insumos y materiales de uso diario.',
   Agroquimicos: 'Fertilizantes, fungicidas, herbicidas y coadyuvantes.',
   ASEO: 'Productos de limpieza y aseo por piso y categoría.',
