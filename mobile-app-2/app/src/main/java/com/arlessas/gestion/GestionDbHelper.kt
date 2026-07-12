@@ -29,6 +29,9 @@ data class Movimiento(
     val herramientaId: String = "",
     val estado: String = "",
     val observaciones: String = "",
+    val asignadoA: String = "",
+    val responsableEntrega: String = "",
+    val devueltoPor: String = "",
 )
 
 data class Herramienta(

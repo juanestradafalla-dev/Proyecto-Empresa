@@ -56,6 +56,7 @@ import com.google.gson.reflect.TypeToken
 
 private const val TALLER_INVENTORY_CACHE_MS = 120_000L
 private const val TALLER_MOVEMENTS_CACHE_MS = 45_000L
+private var tallerMovimientoFormToken = 0L
 
 internal fun MainActivity.marcarCacheTallerTrasCambio(reason: String, inventarioLocalActualizado: Boolean = true) {
     val now = android.os.SystemClock.elapsedRealtime()
@@ -104,6 +105,7 @@ internal fun MainActivity.dataHerramientaCloud(h: Herramienta, idLocal: Long, us
             "estado" to h.estado,
             "ubicacion" to h.ubicacion,
             "responsable" to h.responsable,
+            "asignado_a" to h.responsable.takeIf { h.ocupados() > 0.0 }.orEmpty(),
             "observaciones" to h.observaciones,
             "registrado_por" to usuario,
             "usuario_uid" to (auth.currentUser?.uid ?: ""),
@@ -117,6 +119,7 @@ internal fun MainActivity.actualizarHerramientaCloudEstado(h: Herramienta, estad
             .set(mapOf(
                 "estado" to estado,
                 "responsable" to responsable,
+                "asignado_a" to responsable.takeIf { ocupados > 0.0 }.orEmpty(),
                 "cantidad_ocupada" to ocupados,
                 "cantidad_disponible" to (h.cantidadTotal - ocupados).coerceAtLeast(0.0),
                 "cantidad_total" to h.cantidadTotal,
@@ -189,6 +192,13 @@ internal fun Herramienta.etiquetaEntradaPrestamo(): String {
     return "${categoriaTaller()} · $nombre" +
         (if (detalle.isNotBlank()) " · $detalle" else "") +
         " · Devolver ${formatoCantidadTaller(ocupados())} ($codigoTexto)$asignacion"
+}
+
+internal fun Herramienta.etiquetaEntradaPrestamoAsignado(asignadoA: String): String {
+    val codigoTexto = codigo.ifBlank { "Sin codigo" }
+    val vehiculo = vehiculoAsignado.takeIf { it.isNotBlank() }?.let { " - con $it" }.orEmpty()
+    return "$nombre - $codigoTexto - Devolver ${formatoCantidadTaller(ocupados())}" +
+        " - Asignado a: ${asignadoA.ifBlank { "No identificado" }}$vehiculo"
 }
 
 internal fun Herramienta.textoDisponibilidad(): String {
@@ -336,6 +346,9 @@ internal fun movimientoDesdeDocTaller(doc: com.google.firebase.firestore.Documen
             docTexto(doc, "observaciones"),
             docTexto(doc, "fotoUrl").takeIf { it.isNotBlank() }?.let { "__FOTO_URL__$it" }.orEmpty(),
         ).filter { it.isNotBlank() }.joinToString("\n"),
+        asignadoA = docTexto(doc, "asignado_a"),
+        responsableEntrega = docTexto(doc, "responsable_entrega"),
+        devueltoPor = docTexto(doc, "devuelto_por"),
     )
 }
 
@@ -480,6 +493,14 @@ internal data class PrestamoTallerActivo(
     val herramienta: Herramienta,
     val movimientoSalida: Movimiento?,
 )
+
+internal fun PrestamoTallerActivo.nombreAsignado(): String {
+    return movimientoSalida?.asignadoA
+        ?.ifBlank { movimientoSalida.solicitante }
+        ?.ifBlank { herramienta.responsable }
+        ?.ifBlank { "No identificado" }
+        ?: herramienta.responsable.ifBlank { "No identificado" }
+}
 
 internal fun Movimiento.esSalidaPrestamoTaller(): Boolean {
     return TallerCanonicos.esModuloTaller(modulo) &&
@@ -653,9 +674,7 @@ internal fun MainActivity.prestamoActivoCardTaller(prestamo: PrestamoTallerActiv
     val herramienta = prestamo.herramienta
     val movimiento = prestamo.movimientoSalida
     val accent = tallerSubmoduloAccent(herramienta.subModulo)
-    val prestadoA = movimiento?.solicitante
-        ?.ifBlank { herramienta.responsable }
-        ?: herramienta.responsable
+    val prestadoA = prestamo.nombreAsignado()
     val ubicacion = ubicacionPrestamoTaller(herramienta, movimiento)
     val cantidadTexto = formatoCantidadTaller(herramienta.ocupados())
 
@@ -826,7 +845,7 @@ internal fun herramientaDesdeDocumentoFirestore(doc: com.google.firebase.firesto
         codigo = codigo,
         estado = docTexto(doc, "estado").ifBlank { "Disponible" },
         ubicacion = docTexto(doc, "ubicacion"),
-        responsable = docTexto(doc, "responsable"),
+        responsable = docTexto(doc, "asignado_a", "responsable"),
         observaciones = docTexto(doc, "observaciones"),
         subModulo = subModulo,
         subcategoria = docTexto(doc, "subcategoria", "referencia").ifBlank {
@@ -1115,6 +1134,7 @@ internal fun MainActivity.registrarMovimientoHerramienta(
         cantidad: String,
         fotoUrl: String = "",
         zona: String = "",
+        asignadoA: String = "",
         estado: String = "",  // para entradas: estado elegido por el usuario al devolver
         vehiculoAsignado: String = "",  // para implementos: nombre del vehículo al que se asigna en la salida
         auto: Boolean = false,  // si es una acción automática (ej. implemento ligado a vehículo), suprime toasts y navegación
@@ -1129,6 +1149,13 @@ internal fun MainActivity.registrarMovimientoHerramienta(
             } else {
                 (herramienta.ocupados() - cantVal).coerceAtLeast(0.0)
             }
+            val asignadoResuelto = if (esSalida) {
+                solicitante.trim()
+            } else {
+                asignadoA.trim().ifBlank { herramienta.responsable }.ifBlank { "No identificado" }
+            }
+            val devueltoPor = if (esSalida) "" else solicitante.trim()
+            val responsableActivo = if (nuevaOcupacion <= 0.0) "" else asignadoResuelto
             val nuevoEstado = if (!esSalida && estado.isNotBlank()) {
                 estado
             } else if (nuevaOcupacion <= 0.0) "Disponible" else "En uso"
@@ -1154,7 +1181,10 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 horometro = "",
                 herramientaId = herramienta.id.toString(),
                 estado = nuevoEstado,
-                observaciones = observaciones
+                observaciones = observaciones,
+                asignadoA = asignadoResuelto,
+                responsableEntrega = responsable,
+                devueltoPor = devueltoPor,
             )
             val idMov = db.insertarMovimiento(mov)
             
@@ -1178,6 +1208,8 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 "cantidad" to mov.cantidad,
                 "unidad" to mov.unidad,
                 "solicitante" to mov.solicitante,
+                "asignado_a" to asignadoResuelto,
+                "devuelto_por" to devueltoPor,
                 "labor" to mov.labor,
                 "tipo_labor" to labor,
                 "zona_ejecucion" to zona,
@@ -1197,7 +1229,7 @@ internal fun MainActivity.registrarMovimientoHerramienta(
             )
 
             // 2. Actualizar estado de la herramienta
-            db.actualizarOcupacionHerramienta(herramienta.id, nuevaOcupacion, responsable)
+            db.actualizarOcupacionHerramienta(herramienta.id, nuevaOcupacion, responsableActivo)
             marcarCacheTallerTrasCambio("movimiento_${tipo.lowercase(Locale.getDefault())}")
 
             // 3. Si es un implemento asignado a un vehículo, guardar la asociación
@@ -1237,7 +1269,8 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 val dataEstado = mapOf(
                     "clave" to claveHerramientaCloud(herramienta),
                     "estado" to mov.estado,
-                    "responsable" to responsable,
+                    "responsable" to responsableActivo,
+                    "asignado_a" to responsableActivo,
                     "cantidad_ocupada" to nuevaOcupacion,
                     "cantidad_disponible" to (herramienta.cantidadTotal - nuevaOcupacion).coerceAtLeast(0.0),
                     "ultima_actualizacion" to now(),
@@ -1251,7 +1284,7 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 firestore.collection("movimientos")
                     .add(dataMov)
                     .addOnSuccessListener {
-                        actualizarHerramientaCloudEstado(herramienta, mov.estado, responsable, nuevaOcupacion)
+                        actualizarHerramientaCloudEstado(herramienta, mov.estado, responsableActivo, nuevaOcupacion)
                         finalizar()
                     }
                     .addOnFailureListener {
@@ -1486,19 +1519,11 @@ internal fun MainActivity.abrirFormularioMovimientoTallerTrasEscaneo(
     herramienta: Herramienta,
     subModulo: String,
 ) {
-    currentScreenRenderer = {
-        showMovimientoHerramientaForm(
-            tipoMovimiento = tipoMovimiento,
-            herramientaIdPreseleccionada = herramienta.id,
-            subModulo = subModulo,
-            sincronizar = false,
-        )
-    }
-    currentScreenBackAction = { showTallerSubmoduloMenu(subModulo) }
-    renderMovimientoHerramientaForm(
+    showMovimientoHerramientaForm(
         tipoMovimiento = tipoMovimiento,
         herramientaIdPreseleccionada = herramienta.id,
         subModulo = subModulo,
+        sincronizar = false,
     )
 }
 
@@ -2368,6 +2393,7 @@ internal fun MainActivity.showMovimientoHerramientaForm(
         subModulo: String = TallerCanonicos.SUBMODULO_HERRAMIENTAS_TALLER,
         sincronizar: Boolean = true,
     ) {
+        val renderToken = ++tallerMovimientoFormToken
         currentScreenRenderer = {
             showMovimientoHerramientaForm(
                 tipoMovimiento,
@@ -2379,10 +2405,10 @@ internal fun MainActivity.showMovimientoHerramientaForm(
                 sincronizar,
             )
         }
-        if (sincronizar) {
-            baseScreen("$tipoMovimiento temporal", "Sincronizando inventario de $subModulo...")
-            prepararInventarioTaller {
-                if (isFinishing || isDestroyed) return@prepararInventarioTaller
+
+        fun renderizarConPrestamos() {
+            if (!tipoMovimiento.equals("Entrada", ignoreCase = true)) {
+                if (renderToken != tallerMovimientoFormToken) return
                 renderMovimientoHerramientaForm(
                     tipoMovimiento,
                     herramientaIdPreseleccionada,
@@ -2391,16 +2417,40 @@ internal fun MainActivity.showMovimientoHerramientaForm(
                     prefObservaciones,
                     subModulo,
                 )
+                return
+            }
+            val pantallaCargaId = currentScreenId
+            cargarMovimientosPrestamosTaller { movimientos ->
+                if (renderToken != tallerMovimientoFormToken || currentScreenId != pantallaCargaId || !pantallaActiva()) {
+                    return@cargarMovimientosPrestamosTaller
+                }
+                renderMovimientoHerramientaForm(
+                    tipoMovimiento,
+                    herramientaIdPreseleccionada,
+                    prefSolicitante,
+                    prefLabor,
+                    prefObservaciones,
+                    subModulo,
+                    movimientos,
+                )
+            }
+        }
+
+        if (sincronizar) {
+            baseScreen("$tipoMovimiento temporal", "Sincronizando inventario de $subModulo...")
+            prepararInventarioTaller {
+                if (isFinishing || isDestroyed || renderToken != tallerMovimientoFormToken) return@prepararInventarioTaller
+                renderizarConPrestamos()
             }
         } else {
-            renderMovimientoHerramientaForm(
-                tipoMovimiento,
-                herramientaIdPreseleccionada,
-                prefSolicitante,
-                prefLabor,
-                prefObservaciones,
-                subModulo,
-            )
+            if (tipoMovimiento.equals("Entrada", ignoreCase = true)) {
+                baseScreen(
+                    "$tipoMovimiento temporal",
+                    "Cargando prestamos activos de $subModulo...",
+                    backAction = { showTallerSubmoduloMenu(subModulo) },
+                )
+            }
+            renderizarConPrestamos()
         }
     }
 
@@ -2411,10 +2461,20 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
         prefLabor: String = "",
         prefObservaciones: String = "",
         subModulo: String = TallerCanonicos.SUBMODULO_HERRAMIENTAS_TALLER,
+        movimientosPrestamo: List<Movimiento> = emptyList(),
     ) {
         if (isFinishing || isDestroyed) return
         try {
             val esEntrada = tipoMovimiento.equals("Entrada", ignoreCase = true)
+            val prestamosPorHerramienta = if (esEntrada) {
+                prestamosActivosTaller(movimientosPrestamo).associateBy { it.herramienta.id }
+            } else {
+                emptyMap()
+            }
+            fun asignadoA(herramienta: Herramienta): String {
+                return prestamosPorHerramienta[herramienta.id]?.nombreAsignado()
+                    ?: herramienta.responsable.ifBlank { "No identificado" }
+            }
             val herramientasBase = if (esEntrada) {
                 herramientasEnPrestamoTaller(subModulo)
             } else {
@@ -2472,7 +2532,7 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
             var categoriaSeleccionada = "Todas las categorías"
             var herramientasVisibles = herramientasBase.toMutableList()
             fun opcionesSpinner(): List<String> = herramientasVisibles.map { h ->
-                if (esEntrada) h.etiquetaEntradaPrestamo() else h.toString()
+                if (esEntrada) h.etiquetaEntradaPrestamoAsignado(asignadoA(h)) else h.toString()
             }
             fun etiquetasQr(): List<String> = herramientasVisibles.map { it.etiquetaBusquedaQr() }.distinct()
 
@@ -2510,8 +2570,8 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
                     "QR pendiente" to if (h.requiereAsignarQr) "Sí" else "No",
                 )
                 
-                if (esEntrada && h.responsable.isNotBlank()) {
-                    infoList.add(2, "Prestado a" to h.responsable)
+                if (esEntrada) {
+                    infoList.add(2, "Asignado a" to asignadoA(h))
                 }
 
                 stockInfo.renderStockSummary(
@@ -2957,7 +3017,8 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
                         observaciones = obsFinal,
                         cantidad = cant.toString(),
                         fotoUrl = fotoFinal,
-                        estado = estadoParaEntrada
+                        estado = estadoParaEntrada,
+                        asignadoA = if (esEntrada) asignadoA(selectedTool) else "",
                     )
                 }
 
@@ -3042,12 +3103,13 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
                                     observaciones = "Entrada automática por devolución de vehículo $vehiculoNombre",
                                     cantidad = impl.ocupados().toString(),
                                     fotoUrl = (if (urlEvidencia.isNotBlank()) urlEvidencia else uriLocalEvidencia),
+                                    asignadoA = asignadoA(impl),
                                     vehiculoAsignado = "",  // limpiar la asignación
                                     auto = true
                                 )
                                 // Asegurar limpieza local
                                 db.actualizarAsignacionVehiculo(impl.id, "")
-                                db.actualizarOcupacionHerramienta(impl.id, 0.0, solicitante.text.toString())
+                                db.actualizarOcupacionHerramienta(impl.id, 0.0, "")
 
                                 // Limpiar en la nube
                                 if (isNetworkAvailable()) {
