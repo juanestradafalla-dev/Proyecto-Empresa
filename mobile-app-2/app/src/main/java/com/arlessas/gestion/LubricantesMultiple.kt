@@ -7,6 +7,7 @@ import android.app.AlertDialog
 import android.app.Dialog
 import android.graphics.Color
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
@@ -54,6 +55,7 @@ private val lubricanteEntregaLineas = mutableListOf<LubricanteEntregaLinea>()
 private val lubricanteProductosPersonalizados = linkedMapOf<String, LubricanteProductoMeta>()
 private var lubricanteEntregaEditandoId: Long? = null
 private var lubricanteEntregaProcesando = false
+private var lubricanteEntregaOperacionId = 0L
 private var lubricanteDraftCategoria = ""
 private var lubricanteDraftSubcategoria = ""
 private var lubricanteDraftProducto = ""
@@ -111,7 +113,9 @@ private fun MainActivity.cargarLubricantePersonalizados() {
             snapshot.documents.mapNotNull { lubricanteMetaDesdeDocumento(it) }.forEach { registrarLubricanteEnCatalogoLocal(it) }
             lubricantePersonalizadosCargando = false
             lubricantePersonalizadosCargados = true
-            if (currentScreenId.contains("lubricante", ignoreCase = true)) currentScreenRenderer?.invoke()
+            if (!lubricanteEntregaProcesando && currentScreenId.contains("lubricante", ignoreCase = true)) {
+                currentScreenRenderer?.invoke()
+            }
         }
         .addOnFailureListener {
             lubricantePersonalizadosCargando = false
@@ -122,6 +126,7 @@ private fun limpiarEstadoEntregaLubricante() {
     lubricanteEntregaLineas.clear()
     lubricanteEntregaEditandoId = null
     lubricanteEntregaProcesando = false
+    lubricanteEntregaOperacionId = 0L
     lubricanteDraftCategoria = ""
     lubricanteDraftSubcategoria = ""
     lubricanteDraftProducto = ""
@@ -152,9 +157,41 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     pRef: String = "",
 ) {
     cargarLubricantePersonalizados()
-    if (pCat.isNotBlank()) lubricanteDraftCategoria = pCat
-    if (pItem.isNotBlank()) lubricanteDraftSubcategoria = pItem
-    if (pRef.isNotBlank()) lubricanteDraftProducto = pRef
+    if (pCat.isNotBlank() && pRef.isNotBlank()) {
+        lubricanteDraftCategoria = pCat
+        lubricanteDraftSubcategoria = pItem
+        lubricanteDraftProducto = pRef
+    } else if (pItem.isNotBlank()) {
+        val resuelto = resolverProductoCatalogo(ModulosInventario.LUBRICANTES_TALLER, pItem)
+        val canonico = resuelto?.let {
+            QuimicosCanonicos.buscar(ModulosInventario.LUBRICANTES_TALLER, it.categoria, it.item, it.referencia)
+        }
+        val personalizado = resuelto?.let { producto ->
+            lubricanteProductosPersonalizados.values.firstOrNull {
+                normalizarBusqueda(it.categoria) == normalizarBusqueda(producto.categoria) &&
+                    normalizarBusqueda(it.subcategoria) == normalizarBusqueda(producto.item) &&
+                    normalizarBusqueda(it.producto) == normalizarBusqueda(producto.referencia)
+            }
+        }
+        val moduloValido = resuelto != null && (
+            ModulosInventario.esModuloLubricantesTaller(resuelto.modulo) ||
+                normalizarBusqueda(resuelto.modulo) == normalizarBusqueda(ModulosInventario.QUIMICO_LEGACY) &&
+                (canonico != null || personalizado != null)
+            )
+        if (resuelto != null && moduloValido) {
+            lubricanteDraftCategoria = resuelto.categoria
+            lubricanteDraftSubcategoria = resuelto.item
+            lubricanteDraftProducto = resuelto.referencia
+            val meta = personalizado ?: canonico?.let {
+                LubricanteProductoMeta(it.documentoId, it.codigoOriginal, it.categoria, it.subcategoria, it.item, it.ubicacion, it.unidad)
+            }
+            if (meta != null && ModulosInventario.moduloQuimico(meta.categoria, meta.ubicacion) == ModulosInventario.LUBRICANTES_TALLER) {
+                lubricanteDraftCodigo = meta.codigoOriginal
+                lubricanteDraftDocumento = meta.documentoId
+                lubricanteDraftUbicacion = meta.ubicacion
+            }
+        }
+    }
     if (pCant.isNotBlank()) lubricanteDraftCantidad = pCant
     if (pSol.isNotBlank()) lubricanteDraftSolicitante = pSol
 
@@ -180,13 +217,15 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     }
 
     currentScreenRenderer = {
-        showLubricantesTallerForm(
-            pItem = lubricanteDraftSubcategoria,
-            pCant = lubricanteDraftCantidad,
-            pSol = lubricanteDraftSolicitante,
-            pCat = lubricanteDraftCategoria,
-            pRef = lubricanteDraftProducto,
-        )
+        if (!lubricanteEntregaProcesando) {
+            showLubricantesTallerForm(
+                pItem = lubricanteDraftSubcategoria,
+                pCant = lubricanteDraftCantidad,
+                pSol = lubricanteDraftSolicitante,
+                pCat = lubricanteDraftCategoria,
+                pRef = lubricanteDraftProducto,
+            )
+        }
     }
     val root = baseScreen(
         "Lubricantes taller",
@@ -346,16 +385,18 @@ internal fun MainActivity.showLubricantesMultipleInterno(
             "Disponible en ${seleccion.ubicacion}: ${cantidadTexto(seleccion.cantidad)} ${seleccion.unidad}\nDocumento: ${seleccion.documentoId}"
         }
         stockLabel.setTextColor(if ((seleccion?.cantidad ?: 0.0) <= 0.0) Color.RED else verdeOscuro)
-        ubicacionSpinner.isEnabled = ubicacionesActuales.isNotEmpty()
-        ubicacionSpinner.alpha = if (ubicacionesActuales.isNotEmpty()) 1f else 0.55f
+        val formularioDisponible = !lubricanteEntregaProcesando
+        ubicacionSpinner.isEnabled = formularioDisponible && ubicacionesActuales.isNotEmpty()
+        ubicacionSpinner.alpha = if (ubicacionSpinner.isEnabled) 1f else 0.55f
         vistaEntrada?.let { vista ->
-            val habilitada = seleccion != null
+            val habilitada = formularioDisponible && seleccion != null
             vista.isEnabled = habilitada
             vista.alpha = if (habilitada) 1f else 0.55f
         }
     }
 
     fun seleccionarUbicacion(opcion: QuimicoUbicacionStock?) {
+        if (lubricanteEntregaProcesando) return
         if (opcion != null &&
             ModulosInventario.moduloQuimico(opcion.categoria, opcion.ubicacion) != ModulosInventario.LUBRICANTES_TALLER
         ) {
@@ -387,6 +428,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         val token = "${tokenProducto(opcion.codigoOriginal)}|${normalizarBusqueda(opcion.documentoId)}"
         firestore.collection("existencias").document(opcion.documentoId).get()
             .addOnSuccessListener { snapshot ->
+                if (lubricanteEntregaProcesando) return@addOnSuccessListener
                 val tokenActual = "${tokenProducto(opcion.codigoOriginal)}|${normalizarBusqueda(ubicacionSeleccionada?.documentoId.orEmpty())}"
                 if (!pantallaActiva() || consulta != consultaStockActual || token != tokenActual) return@addOnSuccessListener
                 val meta = lubricanteMetaDesdeDocumento(snapshot)
@@ -422,6 +464,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
                 actualizarResumen()
             }
             .addOnFailureListener {
+                if (lubricanteEntregaProcesando) return@addOnFailureListener
                 val tokenActual = "${tokenProducto(opcion.codigoOriginal)}|${normalizarBusqueda(ubicacionSeleccionada?.documentoId.orEmpty())}"
                 if (consulta != consultaStockActual || token != tokenActual) return@addOnFailureListener
                 stockVerificado = false
@@ -437,7 +480,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         ubicacionPreferida: String = "",
         documentoPreferido: String = "",
     ) {
-        if (!pantallaActiva()) return
+        if (!pantallaActiva() || lubricanteEntregaProcesando) return
         escribirCodigoSinBusqueda(codigoOriginal)
         codigoOriginalSeleccionado = codigoOriginal
         stockVerificado = false
@@ -447,7 +490,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         val consulta = ++consultaStockActual
         val token = tokenProducto(codigoOriginal)
         cargarUbicacionesQuimico(codigoOriginal, producto, { opciones ->
-            if (!pantallaActiva() || consulta != consultaStockActual || token != tokenProducto(codigoOriginal)) return@cargarUbicacionesQuimico
+            if (!pantallaActiva() || lubricanteEntregaProcesando || consulta != consultaStockActual || token != tokenProducto(codigoOriginal)) return@cargarUbicacionesQuimico
             val opcionesLubricante = opciones.filter {
                 ModulosInventario.moduloQuimico(it.categoria, it.ubicacion) == ModulosInventario.LUBRICANTES_TALLER
             }
@@ -459,7 +502,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
             poblarUbicaciones(opcionesLubricante, seleccion?.documentoId.orEmpty())
             seleccionarUbicacion(seleccion)
         }, {
-            if (!pantallaActiva() || consulta != consultaStockActual || token != tokenProducto(codigoOriginal)) return@cargarUbicacionesQuimico
+            if (!pantallaActiva() || lubricanteEntregaProcesando || consulta != consultaStockActual || token != tokenProducto(codigoOriginal)) return@cargarUbicacionesQuimico
             limpiarSeleccionStock()
             stockLabel.text = "Stock no disponible en linea"
             stockLabel.setTextColor(Color.RED)
@@ -475,6 +518,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         }
 
     fun aplicarMeta(meta: LubricanteProductoMeta?) {
+        if (lubricanteEntregaProcesando) return
         if (meta == null) {
             consultaStockActual++
             limpiarSeleccionStock()
@@ -493,6 +537,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     }
 
     fun resolverProductoSeleccionado(documentoPreferido: String = "", ubicacionPreferida: String = "") {
+        if (lubricanteEntregaProcesando) return
         val categoria = categoriaSpinner.selectedItem?.toString().orEmpty()
         val subcategoria = subcategoriaSpinner.selectedItem?.toString().orEmpty()
         val producto = productoSpinner.selectedItem?.toString().orEmpty()
@@ -518,7 +563,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         stockLabel.text = "Consultando producto..."
         firestore.collection("existencias").whereEqualTo("item", producto).limit(50).get()
             .addOnSuccessListener { snapshot ->
-                if (!pantallaActiva() || consulta != consultaStockActual || token != tokenProducto()) return@addOnSuccessListener
+                if (!pantallaActiva() || lubricanteEntregaProcesando || consulta != consultaStockActual || token != tokenProducto()) return@addOnSuccessListener
                 val metas = snapshot.documents.mapNotNull { lubricanteMetaDesdeDocumento(it) }.filter {
                     normalizarBusqueda(it.categoria) == normalizarBusqueda(categoria) &&
                         normalizarBusqueda(it.subcategoria) == normalizarBusqueda(subcategoria)
@@ -530,7 +575,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
                 if (meta == null) aplicarMeta(null) else aplicarMeta(meta)
             }
             .addOnFailureListener {
-                if (consulta == consultaStockActual && token == tokenProducto()) aplicarMeta(null)
+                if (!lubricanteEntregaProcesando && consulta == consultaStockActual && token == tokenProducto()) aplicarMeta(null)
             }
     }
 
@@ -576,7 +621,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
 
     ubicacionSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
         override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-            if (actualizandoUbicaciones || ubicacionSpinner.tag == "SINCRO") return
+            if (lubricanteEntregaProcesando || actualizandoUbicaciones || ubicacionSpinner.tag == "SINCRO") return
             val opcion = ubicacionesActuales.getOrNull(p2) ?: return
             seleccionarUbicacion(opcion)
         }
@@ -585,7 +630,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     }
 
     setupCodigoInternoSalida(root, codigoInterno, ModulosInventario.LUBRICANTES_TALLER) { producto ->
-        if (!eventosSpinnerActivos) return@setupCodigoInternoSalida
+        if (lubricanteEntregaProcesando || !eventosSpinnerActivos) return@setupCodigoInternoSalida
         consultaStockActual++
         if (!esDocumentoLubricanteTaller(producto.modulo, producto.categoria, producto.ubicacion)) {
             aplicarMeta(null)
@@ -604,6 +649,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         )
         registrarLubricanteEnCatalogoLocal(meta)
         seleccionarSpinners(meta.categoria, meta.subcategoria, meta.producto) {
+            if (lubricanteEntregaProcesando) return@seleccionarSpinners
             lubricanteDraftCategoria = meta.categoria
             lubricanteDraftSubcategoria = meta.subcategoria
             lubricanteDraftProducto = meta.producto
@@ -612,9 +658,10 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     }
 
     setupSearchBar(root, ModulosInventario.LUBRICANTES_TALLER) { _, categoria, subcategoria, producto ->
-        if (!eventosSpinnerActivos) return@setupSearchBar
+        if (lubricanteEntregaProcesando || !eventosSpinnerActivos) return@setupSearchBar
         consultaStockActual++
         seleccionarSpinners(categoria, subcategoria, producto) {
+            if (lubricanteEntregaProcesando) return@seleccionarSpinners
             lubricanteDraftCategoria = categoria
             lubricanteDraftSubcategoria = subcategoria
             lubricanteDraftProducto = producto
@@ -624,7 +671,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
 
     categoriaSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
         override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-            if (!eventosSpinnerActivos || actualizandoSpinners || categoriaSpinner.tag == "SINCRO") return
+            if (lubricanteEntregaProcesando || !eventosSpinnerActivos || actualizandoSpinners || categoriaSpinner.tag == "SINCRO") return
             val categoria = categoriaSpinner.selectedItem?.toString().orEmpty()
             if (!seleccionLubricanteValida(categoria)) return
             lubricanteDraftCategoria = categoria
@@ -641,7 +688,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
 
     subcategoriaSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
         override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-            if (!eventosSpinnerActivos || actualizandoSpinners || subcategoriaSpinner.tag == "SINCRO") return
+            if (lubricanteEntregaProcesando || !eventosSpinnerActivos || actualizandoSpinners || subcategoriaSpinner.tag == "SINCRO") return
             val categoria = categoriaSpinner.selectedItem?.toString().orEmpty()
             val subcategoria = subcategoriaSpinner.selectedItem?.toString().orEmpty()
             if (!seleccionLubricanteValida(categoria) || !seleccionLubricanteValida(subcategoria)) return
@@ -658,7 +705,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
 
     productoSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
         override fun onItemSelected(p0: android.widget.AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
-            if (!eventosSpinnerActivos || actualizandoSpinners || productoSpinner.tag == "SINCRO") return
+            if (lubricanteEntregaProcesando || !eventosSpinnerActivos || actualizandoSpinners || productoSpinner.tag == "SINCRO") return
             val producto = productoSpinner.selectedItem?.toString().orEmpty()
             if (!seleccionLubricanteValida(producto)) return
             lubricanteDraftProducto = producto
@@ -669,9 +716,11 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     }
 
     root.post {
+        if (lubricanteEntregaProcesando) return@post
         val categoriaInicial = lubricanteDraftCategoria.ifBlank { categoriaSpinner.selectedItem?.toString().orEmpty() }
         if (seleccionLubricanteValida(categoriaInicial)) {
             seleccionarSpinners(categoriaInicial, lubricanteDraftSubcategoria, lubricanteDraftProducto) {
+                if (lubricanteEntregaProcesando) return@seleccionarSpinners
                 eventosSpinnerActivos = true
                 val categoriaActual = categoriaSpinner.selectedItem?.toString().orEmpty()
                 val subcategoriaActual = subcategoriaSpinner.selectedItem?.toString().orEmpty()
@@ -731,12 +780,15 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     observar(observaciones) { lubricanteDraftObservaciones = it }
 
     root.addView(evidenceButton {
+        if (lubricanteEntregaProcesando) return@evidenceButton
         capturarEvidencia { uri ->
+            if (lubricanteEntregaProcesando) return@capturarEvidencia
             uriLocalEvidencia = uri
             urlEvidencia = ""
             lubricanteDraftUriEvidencia = uri
             lubricanteDraftUrlEvidencia = ""
             mostrarPrevisualizacionEvidencia(root, uri) {
+                if (lubricanteEntregaProcesando) return@mostrarPrevisualizacionEvidencia
                 uriLocalEvidencia = ""
                 urlEvidencia = ""
                 lubricanteDraftUriEvidencia = ""
@@ -746,6 +798,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     })
     if (uriLocalEvidencia.isNotBlank()) {
         mostrarPrevisualizacionEvidencia(root, uriLocalEvidencia) {
+            if (lubricanteEntregaProcesando) return@mostrarPrevisualizacionEvidencia
             uriLocalEvidencia = ""
             urlEvidencia = ""
             lubricanteDraftUriEvidencia = ""
@@ -755,8 +808,10 @@ internal fun MainActivity.showLubricantesMultipleInterno(
 
     val gestionAcciones = gestionNuevoEntradaRow(
         onNuevo = {
+            if (lubricanteEntregaProcesando) return@gestionNuevoEntradaRow
             guardarDraft()
             showDialogNuevoLubricanteMultiple { nuevo ->
+                if (lubricanteEntregaProcesando) return@showDialogNuevoLubricanteMultiple
                 registrarLubricanteEnCatalogoLocal(nuevo)
                 lubricanteDraftCategoria = nuevo.categoria
                 lubricanteDraftSubcategoria = nuevo.subcategoria
@@ -768,12 +823,14 @@ internal fun MainActivity.showLubricantesMultipleInterno(
             }
         },
         onEntrada = {
+            if (lubricanteEntregaProcesando) return@gestionNuevoEntradaRow
             guardarDraft()
             val seleccion = ubicacionSeleccionada
             if (seleccion == null) {
             Toast.makeText(this, "Selecciona un lubricante y su documento primero", Toast.LENGTH_SHORT).show()
             } else {
                 showDialogEntradaStockQuimico(seleccion) {
+                    if (lubricanteEntregaProcesando) return@showDialogEntradaStockQuimico
                     cargarUbicaciones(seleccion.codigoOriginal, seleccion.item, seleccion.ubicacion, seleccion.documentoId)
                 }
             }
@@ -845,12 +902,32 @@ internal fun MainActivity.showLubricantesMultipleInterno(
 
     fun actualizarBotones() {
         botonAgregar?.text = if (lubricanteEntregaEditandoId != null) "Actualizar lubricante" else "Agregar a la entrega"
+        botonAgregar?.isEnabled = !lubricanteEntregaProcesando
+        botonAgregar?.alpha = if (lubricanteEntregaProcesando) 0.55f else 1f
         val habilitado = lubricanteEntregaLineas.isNotEmpty() && !lubricanteEntregaProcesando
         botonRegistrar?.isEnabled = habilitado
         botonRegistrar?.alpha = if (habilitado) 1f else 0.55f
     }
 
+    fun habilitarRecursivamente(vista: View, habilitada: Boolean) {
+        vista.isEnabled = habilitada
+        if (vista is ViewGroup) {
+            for (indice in 0 until vista.childCount) {
+                habilitarRecursivamente(vista.getChildAt(indice), habilitada)
+            }
+        }
+    }
+
+    fun establecerFormularioHabilitado(habilitado: Boolean) {
+        habilitarRecursivamente(root, habilitado)
+        if (habilitado) {
+            actualizarResumen()
+            actualizarBotones()
+        }
+    }
+
     fun aplicarLinea(linea: LubricanteEntregaLinea) {
+        if (lubricanteEntregaProcesando) return
         lubricanteEntregaEditandoId = linea.id
         lubricanteDraftCategoria = linea.categoria
         lubricanteDraftSubcategoria = linea.subcategoria
@@ -859,6 +936,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         lubricanteDraftDocumento = linea.documentoId
         lubricanteDraftUbicacion = linea.ubicacion
         seleccionarSpinners(linea.categoria, linea.subcategoria, linea.producto) {
+            if (lubricanteEntregaProcesando) return@seleccionarSpinners
             escribirCodigoSinBusqueda(linea.codigoOriginal)
             cargarUbicaciones(linea.codigoOriginal, linea.producto, linea.ubicacion, linea.documentoId)
         }
@@ -918,6 +996,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
             val acciones = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val editar = outlineButton("Editar") { aplicarLinea(linea) }
             val eliminar = outlineButton("Eliminar") {
+                if (lubricanteEntregaProcesando) return@outlineButton
                 lubricanteEntregaLineas.removeAll { it.id == linea.id }
                 if (lubricanteEntregaEditandoId == linea.id) lubricanteEntregaEditandoId = null
                 renderProductos()
@@ -931,6 +1010,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     }
 
     botonAgregar = primaryButton("Agregar a la entrega") {
+        if (lubricanteEntregaProcesando) return@primaryButton
         guardarDraft()
         val nueva = lineaDesdeFormulario() ?: return@primaryButton
         val idEditando = lubricanteEntregaEditandoId
@@ -962,7 +1042,7 @@ internal fun MainActivity.showLubricantesMultipleInterno(
     botonAgregar?.let { root.addView(it) }
     root.addView(productosAgregados)
 
-    botonRegistrar = primaryButton("Registrar todos") { view ->
+    botonRegistrar = primaryButton("Registrar todos") {
         if (lubricanteEntregaProcesando) return@primaryButton
         guardarDraft()
         if (lubricanteEntregaLineas.isEmpty()) {
@@ -975,27 +1055,43 @@ internal fun MainActivity.showLubricantesMultipleInterno(
             return@primaryButton
         }
 
+        val lineasConfirmadas = lubricanteEntregaLineas.map { it.copy() }.toList()
+        val solicitanteConfirmado = solicitante.text.toString().trim()
+        val laborConfirmada = labor.text.toString().trim()
+        val observacionesConfirmadas = observaciones.text.toString()
+        val urlEvidenciaConfirmada = urlEvidencia
+        val uriEvidenciaConfirmada = uriLocalEvidencia
+        val evidenciaLocalConfirmada = uriEvidenciaConfirmada.ifBlank {
+            urlEvidenciaConfirmada.takeIf { evidenciaEsUriLocal(it) }.orEmpty()
+        }
+        val operacionId = System.nanoTime()
+
+        fun operacionActiva(): Boolean = lubricanteEntregaProcesando && lubricanteEntregaOperacionId == operacionId
+
         fun finalizarBloqueo() {
+            if (!operacionActiva()) return
             lubricanteEntregaProcesando = false
-            (view as? Button)?.text = "Registrar todos"
-            actualizarBotones()
+            lubricanteEntregaOperacionId = 0L
+            botonRegistrar?.text = "Registrar todos"
+            establecerFormularioHabilitado(true)
         }
 
         fun registrar(foto: String) {
-            val lineas = lubricanteEntregaLineas.toList()
+            if (!operacionActiva()) return
             registrarSalidaMultipleLubricante(
-                lineas,
-                solicitante.text.toString().trim(),
-                labor.text.toString().trim(),
-                observaciones.text.toString(),
+                lineasConfirmadas,
+                solicitanteConfirmado,
+                laborConfirmada,
+                observacionesConfirmadas,
                 foto,
                 onSuccess = {
-                    finalizarBloqueo()
+                    if (!operacionActiva()) return@registrarSalidaMultipleLubricante
                     limpiarEstadoEntregaLubricante()
-                    saved("Consumo de Lubricantes registrado con ${lineas.size} linea(s)")
+                    saved("Consumo de Lubricantes registrado con ${lineasConfirmadas.size} linea(s)")
                     showLubricantesTallerForm()
                 },
                 onFailure = { error ->
+                    if (!operacionActiva()) return@registrarSalidaMultipleLubricante
                     Toast.makeText(this, error.localizedMessage ?: "No se pudo registrar la salida", Toast.LENGTH_LONG).show()
                     finalizarBloqueo()
                 },
@@ -1003,17 +1099,16 @@ internal fun MainActivity.showLubricantesMultipleInterno(
         }
 
         lubricanteEntregaProcesando = true
-        (view as? Button)?.apply {
-            isEnabled = false
-            alpha = 0.55f
-            text = "Registrando..."
-        }
-        val evidenciaLocal = uriLocalEvidencia.ifBlank { urlEvidencia.takeIf { evidenciaEsUriLocal(it) }.orEmpty() }
+        lubricanteEntregaOperacionId = operacionId
+        consultaStockActual++
+        establecerFormularioHabilitado(false)
+        botonRegistrar?.text = "Registrando..."
         when {
-            urlEvidencia.isNotBlank() && !evidenciaEsUriLocal(urlEvidencia) -> registrar(urlEvidencia)
-            evidenciaLocal.isNotBlank() -> {
+            urlEvidenciaConfirmada.isNotBlank() && !evidenciaEsUriLocal(urlEvidenciaConfirmada) -> registrar(urlEvidenciaConfirmada)
+            evidenciaLocalConfirmada.isNotBlank() -> {
                 Toast.makeText(this, "Subiendo evidencia de Lubricantes...", Toast.LENGTH_SHORT).show()
-                subirEvidenciaCloud(evidenciaLocal, ModulosInventario.LUBRICANTES_TALLER) { url ->
+                subirEvidenciaCloud(evidenciaLocalConfirmada, ModulosInventario.LUBRICANTES_TALLER) { url ->
+                    if (!operacionActiva()) return@subirEvidenciaCloud
                     if (url.isBlank()) {
                         Toast.makeText(this, "No se pudo subir la evidencia", Toast.LENGTH_LONG).show()
                         finalizarBloqueo()
