@@ -1,3 +1,4 @@
 <resources>
-    <color name="ic_launcher_background">#08233F</color>
+    <color name="ic_launcher_background">#014D2B</color>
+    <color name="splash_background">#014D2B</color>
 </resources>

@@ -26,7 +26,7 @@ class SplashActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val root = FrameLayout(this).apply {
-            setBackgroundColor(ArlesPalette.green900)
+            setBackgroundColor(getColor(R.color.splash_background))
         }
 
         val content = LinearLayout(this).apply {
