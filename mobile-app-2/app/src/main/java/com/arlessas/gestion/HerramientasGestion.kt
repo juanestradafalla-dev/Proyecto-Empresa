@@ -47,6 +47,7 @@ import java.text.SimpleDateFormat
 import java.text.Normalizer
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import java.io.ByteArrayOutputStream
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -114,19 +115,26 @@ internal fun MainActivity.dataHerramientaCloud(h: Herramienta, idLocal: Long, us
         )
     }
 
-internal fun MainActivity.actualizarHerramientaCloudEstado(h: Herramienta, estado: String, responsable: String, ocupados: Double = h.cantidadOcupada) {
-        firestore.collection("herramientas")
+internal fun MainActivity.actualizarHerramientaCloudEstado(
+    h: Herramienta,
+    estado: String,
+    responsable: String,
+    ocupados: Double = h.cantidadOcupada,
+    metadatosPrestamo: Map<String, Any?> = emptyMap(),
+): com.google.android.gms.tasks.Task<Void> {
+        val data = mutableMapOf<String, Any?>(
+            "estado" to estado,
+            "responsable" to responsable,
+            "asignado_a" to responsable.takeIf { ocupados > 0.0 }.orEmpty(),
+            "cantidad_ocupada" to ocupados,
+            "cantidad_disponible" to (h.cantidadTotal - ocupados).coerceAtLeast(0.0),
+            "cantidad_total" to h.cantidadTotal,
+            "ultima_actualizacion" to now(),
+            "actualizado_por_uid" to (auth.currentUser?.uid ?: ""),
+        ).apply { putAll(metadatosPrestamo) }
+        return firestore.collection("herramientas")
             .document(claveHerramientaCloud(h))
-            .set(mapOf(
-                "estado" to estado,
-                "responsable" to responsable,
-                "asignado_a" to responsable.takeIf { ocupados > 0.0 }.orEmpty(),
-                "cantidad_ocupada" to ocupados,
-                "cantidad_disponible" to (h.cantidadTotal - ocupados).coerceAtLeast(0.0),
-                "cantidad_total" to h.cantidadTotal,
-                "ultima_actualizacion" to now(),
-                "actualizado_por_uid" to (auth.currentUser?.uid ?: "")
-            ), SetOptions.merge())
+            .set(data, SetOptions.merge())
     }
 
 internal fun Herramienta.codigoPrincipalNormalizado(): String = TallerCanonicos.normalizarCodigo(codigo.ifBlank { codigoQr })
@@ -244,6 +252,8 @@ internal fun herramientaDesdeCanonico(item: TallerItemCanonico, existente: Herra
         codigoQr = item.codigoQr,
         requiereAsignarQr = item.requiereAsignarQr,
         esConsumible = existente?.esConsumible ?: false,
+        asignacionActivaId = existente?.asignacionActivaId.orEmpty(),
+        fechaLimiteDevolucionEpochMs = existente?.fechaLimiteDevolucionEpochMs ?: 0L,
     )
 }
 
@@ -351,6 +361,11 @@ internal fun movimientoDesdeDocTaller(doc: com.google.firebase.firestore.Documen
         asignadoA = docTexto(doc, "asignado_a"),
         responsableEntrega = docTexto(doc, "responsable_entrega"),
         devueltoPor = docTexto(doc, "devuelto_por"),
+        asignacionId = docTexto(doc, "asignacion_id", "asignacion_activa_id"),
+        fechaLimiteDevolucionEpochMs = numeroDocumento(
+            doc,
+            "fecha_limite_devolucion_epoch_ms",
+        ).toLong(),
     )
 }
 
@@ -506,8 +521,10 @@ internal fun PrestamoTallerActivo.nombreAsignado(): String {
 
 internal fun Movimiento.esSalidaPrestamoTaller(): Boolean {
     return TallerCanonicos.esModuloTaller(modulo) &&
-        !tipoMovimiento.equals(TallerCanonicos.TIPO_MOV_SALIDA_DEFINITIVA, ignoreCase = true) &&
-        tipoMovimiento.contains("salida", ignoreCase = true)
+        (
+            tipoMovimiento.equals("Salida", ignoreCase = true) ||
+                tipoMovimiento.equals("Salida temporal", ignoreCase = true)
+            )
 }
 
 internal fun Movimiento.coincideConHerramientaPrestada(herramienta: Herramienta): Boolean {
@@ -597,7 +614,7 @@ internal fun MainActivity.cargarMovimientosPrestamosTaller(onReady: (List<Movimi
 internal fun MainActivity.prestamosActivosTaller(movimientos: List<Movimiento>): List<PrestamoTallerActivo> {
     val salidas = movimientos.filter { it.esSalidaPrestamoTaller() }
     return herramientasTallerActivas()
-        .filter { it.estaEnPrestamo() || it.estado.equals("En uso", ignoreCase = true) }
+        .filter { !it.esConsumible && (it.estaEnPrestamo() || it.estado.equals("En uso", ignoreCase = true)) }
         .map { herramienta ->
             PrestamoTallerActivo(
                 herramienta = herramienta,
@@ -640,13 +657,16 @@ internal fun ubicacionPrestamoTaller(herramienta: Herramienta, movimiento: Movim
         ?: herramienta.ubicacion.ifBlank { herramienta.subModulo.ifBlank { "Taller" } }
 }
 
-internal fun MainActivity.abrirDialogoPrestamosActivosTaller() {
+internal fun MainActivity.abrirDialogoPrestamosActivosTaller(
+    asignacionDestacada: String = "",
+    abrirAmpliacion: Boolean = false,
+) {
     Toast.makeText(this, "Actualizando prestamos...", Toast.LENGTH_SHORT).show()
     prepararInventarioTaller {
         if (!pantallaActiva()) return@prepararInventarioTaller
         cargarMovimientosPrestamosTaller { movimientos ->
             if (!pantallaActiva()) return@cargarMovimientosPrestamosTaller
-            mostrarDialogoPrestamosActivosTaller(movimientos)
+            mostrarDialogoPrestamosActivosAgrupados(movimientos, asignacionDestacada, abrirAmpliacion)
         }
     }
 }
@@ -720,81 +740,7 @@ internal fun MainActivity.prestamoActivoCardTaller(prestamo: PrestamoTallerActiv
 }
 
 internal fun MainActivity.mostrarDialogoPrestamosActivosTaller(movimientos: List<Movimiento>) {
-    val prestamos = prestamosActivosTaller(movimientos)
-    val content = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        background = arlesRoundedBackground(ArlesPalette.soft, null, 18)
-        setPadding(dp(18), dp(18), dp(18), dp(14))
-    }
-
-    val header = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-    }
-    header.addView(ImageView(this).apply {
-        setImageResource(R.drawable.ic_tools)
-        setColorFilter(Color.WHITE)
-        background = arlesRoundedBackground(ArlesPalette.warning, null, 14)
-        setPadding(dp(8), dp(8), dp(8), dp(8))
-        layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply {
-            setMargins(0, 0, dp(12), 0)
-        }
-    })
-    header.addView(LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(TextView(context).apply {
-            text = "Prestamos activos"
-            textSize = 18f
-            setTextColor(ArlesPalette.ink)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        })
-        addView(TextView(context).apply {
-            text = "${prestamos.size} herramienta(s) en prestamo"
-            textSize = 11.5f
-            setTextColor(ArlesPalette.muted)
-            setPadding(0, dp(2), 0, 0)
-        })
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-    })
-    content.addView(header)
-
-    if (prestamos.isEmpty()) {
-        content.addView(
-            TextView(this).apply {
-                text = "No hay herramientas prestadas en este momento."
-                textSize = 13f
-                setTextColor(ArlesPalette.muted)
-                gravity = Gravity.CENTER
-                setPadding(dp(12), dp(28), dp(12), dp(22))
-            },
-        )
-    } else {
-        val list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(14), 0, dp(2))
-        }
-        prestamos.forEach { prestamo ->
-            list.addView(prestamoActivoCardTaller(prestamo))
-        }
-        content.addView(ScrollView(this).apply {
-            isFillViewport = false
-            addView(list)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                if (prestamos.size > 3) dp(420) else LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-        })
-    }
-
-    val dialog = AlertDialog.Builder(this)
-        .setView(content)
-        .setPositiveButton("Cerrar", null)
-        .create()
-    dialog.setOnShowListener {
-        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(ArlesPalette.accentTaller)
-    }
-    dialog.show()
+    mostrarDialogoPrestamosActivosAgrupados(movimientos)
 }
 
 internal fun docTexto(doc: com.google.firebase.firestore.DocumentSnapshot, vararg keys: String): String {
@@ -896,6 +842,11 @@ internal fun herramientaDesdeDocumentoFirestore(doc: com.google.firebase.firesto
             ?: (codigo.startsWith("SINQR", true) && docTexto(doc, "codigo_qr").isBlank()),
         vehiculoAsignado = docTexto(doc, "vehiculo_asignado", "vehiculoAsignado"),
         esConsumible = booleanoDocumento(doc, "es_consumible", "consumible"),
+        asignacionActivaId = docTexto(doc, "asignacion_activa_id", "asignacion_id"),
+        fechaLimiteDevolucionEpochMs = numeroDocumento(
+            doc,
+            "fecha_limite_devolucion_epoch_ms",
+        ).toLong(),
     )
 }
 
@@ -1188,6 +1139,36 @@ internal fun MainActivity.registrarMovimientoHerramienta(
             }
             val devueltoPor = if (esSalida) "" else solicitante.trim()
             val responsableActivo = if (nuevaOcupacion <= 0.0) "" else asignadoResuelto
+            val asignacionMovimiento = if (esSalida) {
+                herramienta.asignacionActivaId.ifBlank { "TAL-${UUID.randomUUID()}" }
+            } else {
+                herramienta.asignacionActivaId.ifBlank { "LEGACY-${claveHerramientaCloud(herramienta)}" }
+            }
+            val fechaLimiteMovimiento = if (esSalida) {
+                herramienta.fechaLimiteDevolucionEpochMs.takeIf { herramienta.ocupados() > 0.0 && it > 0L }
+                    ?: calcularLimitePrestamoEpoch(System.currentTimeMillis())
+            } else {
+                herramienta.fechaLimiteDevolucionEpochMs
+            }
+            val prestamoContinua = nuevaOcupacion > 0.0
+            val metadatosHerramienta: Map<String, Any?> = if (prestamoContinua) {
+                mutableMapOf<String, Any?>(
+                    "asignacion_activa_id" to asignacionMovimiento,
+                    "fecha_limite_devolucion" to formatoPlazoPrestamo(fechaLimiteMovimiento),
+                    "fecha_limite_devolucion_epoch_ms" to fechaLimiteMovimiento,
+                    "alarma_prestamo_activa" to true,
+                ).apply {
+                    if (esSalida) put("fecha_salida_prestamo", fecha)
+                }
+            } else {
+                mapOf(
+                    "asignacion_activa_id" to "",
+                    "fecha_salida_prestamo" to "",
+                    "fecha_limite_devolucion" to "",
+                    "fecha_limite_devolucion_epoch_ms" to 0L,
+                    "alarma_prestamo_activa" to false,
+                )
+            }
             val nuevoEstado = if (!esSalida && estado.isNotBlank()) {
                 estado
             } else if (nuevaOcupacion <= 0.0) "Disponible" else "En uso"
@@ -1217,6 +1198,8 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 asignadoA = asignadoResuelto,
                 responsableEntrega = responsable,
                 devueltoPor = devueltoPor,
+                asignacionId = asignacionMovimiento,
+                fechaLimiteDevolucionEpochMs = fechaLimiteMovimiento,
             )
             val idMov = db.insertarMovimiento(mov)
             
@@ -1258,10 +1241,20 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 "fotoUrl" to fotoUrl,
                 "observaciones" to mov.observaciones,
                 "vehiculo_asignado" to if (vehiculoAsignado.isNotBlank()) vehiculoAsignado else null
-            )
+            ).toMutableMap().apply {
+                put("asignacion_id", asignacionMovimiento)
+                put("fecha_limite_devolucion", formatoPlazoPrestamo(fechaLimiteMovimiento))
+                put("fecha_limite_devolucion_epoch_ms", fechaLimiteMovimiento)
+                put("alarma_prestamo_activa", prestamoContinua)
+            }
 
             // 2. Actualizar estado de la herramienta
             db.actualizarOcupacionHerramienta(herramienta.id, nuevaOcupacion, responsableActivo)
+            if (prestamoContinua) {
+                db.activarAlertaPrestamo(herramienta.id, asignacionMovimiento, fechaLimiteMovimiento)
+            } else {
+                db.limpiarAlertaPrestamo(herramienta.id)
+            }
             marcarCacheTallerTrasCambio("movimiento_${tipo.lowercase(Locale.getDefault())}")
 
             // 3. Si es un implemento asignado a un vehículo, guardar la asociación
@@ -1288,17 +1281,37 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 }
             }
 
+            val dataEstado = mutableMapOf<String, Any?>(
+                "clave" to claveHerramientaCloud(herramienta),
+                "estado" to mov.estado,
+                "responsable" to responsableActivo,
+                "asignado_a" to responsableActivo,
+                "cantidad_ocupada" to nuevaOcupacion,
+                "cantidad_disponible" to (herramienta.cantidadTotal - nuevaOcupacion).coerceAtLeast(0.0),
+                "ultima_actualizacion" to now(),
+                "vehiculo_asignado" to vehiculoAsignado,
+            ).apply { putAll(metadatosHerramienta) }
+
             fun finalizar() {
+                if (prestamoContinua) {
+                    programarRevisionDiariaPrestamos(this)
+                } else {
+                    cancelarAlarmaAsignacion(this, asignacionMovimiento)
+                    programarRevisionDiariaPrestamos(this)
+                }
                 if (!auto) {
                     saved("Movimiento registrado: $tipo")
                     val destino = herramienta.subModulo.ifBlank { TallerCanonicos.SUBMODULO_HERRAMIENTAS_TALLER }
                     showTallerSubmoduloMenu(destino)
                 }
             }
+            fun encolarEstadoPendiente() {
+                guardarFirestoreOffline("herramientas", dataEstado)
+            }
             fun encolarPendiente() {
                 guardarFirestoreOffline("movimientos", dataMov)
                 // TAMBIÃ‰N encolamos la actualizaciÃ³n del estado de la herramienta
-                val dataEstado = mapOf(
+                val dataEstado = mutableMapOf<String, Any?>(
                     "clave" to claveHerramientaCloud(herramienta),
                     "estado" to mov.estado,
                     "responsable" to responsableActivo,
@@ -1307,7 +1320,7 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                     "cantidad_disponible" to (herramienta.cantidadTotal - nuevaOcupacion).coerceAtLeast(0.0),
                     "ultima_actualizacion" to now(),
                     "vehiculo_asignado" to vehiculoAsignado
-                )
+                ).apply { putAll(metadatosHerramienta) }
                 guardarFirestoreOffline("herramientas", dataEstado)
                 finalizar()
             }
@@ -1316,8 +1329,18 @@ internal fun MainActivity.registrarMovimientoHerramienta(
                 firestore.collection("movimientos")
                     .add(dataMov)
                     .addOnSuccessListener {
-                        actualizarHerramientaCloudEstado(herramienta, mov.estado, responsableActivo, nuevaOcupacion)
-                        finalizar()
+                        actualizarHerramientaCloudEstado(
+                            herramienta,
+                            mov.estado,
+                            responsableActivo,
+                            nuevaOcupacion,
+                            metadatosHerramienta,
+                        ).addOnSuccessListener {
+                            finalizar()
+                        }.addOnFailureListener {
+                            encolarEstadoPendiente()
+                            finalizar()
+                        }
                     }
                     .addOnFailureListener {
                         encolarPendiente()
@@ -3701,6 +3724,16 @@ internal fun MainActivity.sincronizarHerramientasDesdeNube(force: Boolean = fals
                     estado = if (herramienta.estado.isNotBlank()) herramienta.estado else (local?.estado ?: "Disponible"),
                     responsable = if (herramienta.responsable.isNotBlank()) herramienta.responsable else (local?.responsable ?: ""),
                     cantidadOcupada = herramienta.cantidadOcupada,
+                    asignacionActivaId = if (doc.contains("asignacion_activa_id")) {
+                        herramienta.asignacionActivaId
+                    } else {
+                        local?.asignacionActivaId.orEmpty()
+                    },
+                    fechaLimiteDevolucionEpochMs = if (doc.contains("fecha_limite_devolucion_epoch_ms")) {
+                        herramienta.fechaLimiteDevolucionEpochMs
+                    } else {
+                        local?.fechaLimiteDevolucionEpochMs ?: 0L
+                    },
                 )
                 db.actualizarHerramientaCanonica(merged)
                 db.actualizarOcupacionHerramienta(idLocal, merged.cantidadOcupada, merged.responsable)

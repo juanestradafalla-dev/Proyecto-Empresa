@@ -63,6 +63,7 @@ internal data class AsignacionVehiculoConfirmada(
     val fotos: Map<String, FotoAsignacionCongelada>,
     val fecha: String,
     val asignacionId: String = "VEH-${UUID.randomUUID()}",
+    val fechaLimiteEpochMs: Long = calcularLimitePrestamoEpoch(System.currentTimeMillis()),
 ) {
     fun elementos(): List<Herramienta> = listOf(vehiculo) + implementos
 }
@@ -348,6 +349,11 @@ internal fun MainActivity.registrarAsignacionVehiculoImplementos(
                     "estado" to "En uso",
                     "responsable" to confirmada.solicitante,
                     "asignado_a" to confirmada.solicitante,
+                    "asignacion_activa_id" to confirmada.asignacionId,
+                    "fecha_salida_prestamo" to fecha,
+                    "fecha_limite_devolucion" to formatoPlazoPrestamo(confirmada.fechaLimiteEpochMs),
+                    "fecha_limite_devolucion_epoch_ms" to confirmada.fechaLimiteEpochMs,
+                    "alarma_prestamo_activa" to true,
                     "cantidad_ocupada" to resultado.ocupacionNueva,
                     "cantidad_disponible" to disponibleNueva,
                     "ultima_actualizacion" to fecha,
@@ -404,6 +410,9 @@ internal fun MainActivity.registrarAsignacionVehiculoImplementos(
                     "cantidad_ocupada" to resultado.ocupacionNueva,
                     "cantidad_disponible" to disponibleNueva,
                     "asignacion_id" to confirmada.asignacionId,
+                    "fecha_limite_devolucion" to formatoPlazoPrestamo(confirmada.fechaLimiteEpochMs),
+                    "fecha_limite_devolucion_epoch_ms" to confirmada.fechaLimiteEpochMs,
+                    "alarma_prestamo_activa" to true,
                     "es_vehiculo_principal" to linea.esVehiculoPrincipal,
                     "vehiculo_asignado" to vehiculoAsignado,
                     "vehiculo_codigo" to confirmada.vehiculo.codigo,
@@ -452,12 +461,16 @@ internal fun MainActivity.aplicarAsignacionVehiculoLocal(
                 .filter { it.isNotBlank() }
                 .joinToString("\n"),
             asignadoA = confirmada.solicitante,
+            asignacionId = confirmada.asignacionId,
+            fechaLimiteDevolucionEpochMs = confirmada.fechaLimiteEpochMs,
         ))
         db.actualizarOcupacionHerramienta(herramienta.id, resultado.ocupacionNueva, confirmada.solicitante)
+        db.activarAlertaPrestamo(herramienta.id, confirmada.asignacionId, confirmada.fechaLimiteEpochMs)
         if (!linea.esVehiculoPrincipal) {
             db.actualizarAsignacionVehiculo(herramienta.id, vehiculoNombre)
         }
     }
     marcarCacheTallerTrasCambio("salida_vehiculo_implementos_agrupada")
+    programarRevisionDiariaPrestamos(this)
     Toast.makeText(this, "Asignacion registrada: ${resultados.size} elementos", Toast.LENGTH_LONG).show()
 }
