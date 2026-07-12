@@ -1369,24 +1369,38 @@ function AppShell({ user }: { user: User }) {
       return matchesModule && matchesValue && matchesSearch;
     });
   }, [search, valuationInventory, valuationModuleFilter, valuationValueFilter, valuations]);
-  const valuedProductCount = valuationInventory.filter((item) => (valuations[item.valuationId] ?? 0) > 0).length;
-  const unvaluedProductCount = valuationInventory.length - valuedProductCount;
-  const inventoryGrandTotal = valuationInventory.reduce(
-    (sum, item) => sum + (valuations[item.valuationId] ?? 0) * valuationQuantity(item),
-    0,
-  );
-  const valuationModuleTotals = operationalModules.map((moduleName) => {
-    const items = valuationInventory.filter((item) => valuationModuleForItem(item) === moduleName);
+  const {
+    valuedProductCount,
+    unvaluedProductCount,
+    inventoryGrandTotal,
+    valuationModuleTotals,
+  } = useMemo(() => {
+    let valuedCount = 0;
+    let grandTotal = 0;
+    const totalsByModule = new Map<string, { moduleName: string; productCount: number; valuedCount: number; total: number }>(
+      operationalModules.map((moduleName) => [moduleName, { moduleName, productCount: 0, valuedCount: 0, total: 0 }]),
+    );
+
+    valuationInventory.forEach((item) => {
+      const unitValue = valuations[item.valuationId] ?? 0;
+      const itemTotal = unitValue * valuationQuantity(item);
+      const moduleTotal = totalsByModule.get(valuationModuleForItem(item));
+      grandTotal += itemTotal;
+      if (unitValue > 0) valuedCount += 1;
+      if (moduleTotal) {
+        moduleTotal.productCount += 1;
+        moduleTotal.total += itemTotal;
+        if (unitValue > 0) moduleTotal.valuedCount += 1;
+      }
+    });
+
     return {
-      moduleName,
-      productCount: items.length,
-      valuedCount: items.filter((item) => (valuations[item.valuationId] ?? 0) > 0).length,
-      total: items.reduce(
-        (sum, item) => sum + (valuations[item.valuationId] ?? 0) * valuationQuantity(item),
-        0,
-      ),
+      valuedProductCount: valuedCount,
+      unvaluedProductCount: valuationInventory.length - valuedCount,
+      inventoryGrandTotal: grandTotal,
+      valuationModuleTotals: operationalModules.map((moduleName) => totalsByModule.get(moduleName)!),
     };
-  });
+  }, [valuationInventory, valuations]);
   const usingTallerFallback = isTallerModule && tools.length === 0 && toolsInventory.length > 0;
   const moduleInventoryBase = useMemo(() => {
     const operationalInventory = inventory.filter((item) => !moduleMatches(item.modulo, 'ASEO'));
