@@ -195,10 +195,12 @@ internal fun MainActivity.evidenceButton(action: (View) -> Unit): Button {
 internal fun MainActivity.gestionNuevoEntradaRow(
     onNuevo: () -> Unit,
     onEntrada: () -> Unit,
+    textoNuevo: String = "Añadir nuevo",
+    textoEntrada: String = "Nueva entrada",
 ): LinearLayout {
     return gestionRow(
-        iconTextButton("Añadir nuevo", R.drawable.ic_add, ArlesPalette.primaryAction) { onNuevo() },
-        iconTextButton("Nueva entrada", R.drawable.ic_inbox, ArlesPalette.blueAction) { onEntrada() },
+        iconTextButton(textoNuevo, R.drawable.ic_add, ArlesPalette.primaryAction) { onNuevo() },
+        iconTextButton(textoEntrada, R.drawable.ic_inbox, ArlesPalette.blueAction) { onEntrada() },
     )
 }
 

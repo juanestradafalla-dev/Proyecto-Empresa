@@ -10,7 +10,7 @@ import java.util.Locale
 import org.json.JSONObject
 
 const val DATABASE_NAME = "gestion.db"
-const val DATABASE_VERSION = 10
+const val DATABASE_VERSION = 11
 
 data class Movimiento(
     val id: Long = 0,
@@ -55,6 +55,7 @@ data class Herramienta(
     val codigoQr: String = "",
     val requiereAsignarQr: Boolean = false,
     val vehiculoAsignado: String = "",  // Para implementos: nombre/código del vehículo al que está asignado actualmente
+    val esConsumible: Boolean = false,
 ) {
     fun disponibles(): Double = (cantidadTotal - cantidadOcupada).coerceAtLeast(0.0)
     fun ocupados(): Double = cantidadOcupada.coerceAtLeast(0.0)
@@ -164,7 +165,8 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                 cantidadOcupada REAL DEFAULT 0,
                 codigoQr TEXT,
                 requiereAsignarQr INTEGER DEFAULT 0,
-                vehiculoAsignado TEXT DEFAULT ''
+                vehiculoAsignado TEXT DEFAULT '',
+                esConsumible INTEGER DEFAULT 0
             )
             """.trimIndent()
         )
@@ -366,6 +368,9 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         if (oldVersion < 10) {
             agregarColumnaSiFalta(db, "herramientas", "vehiculoAsignado TEXT DEFAULT ''")
         }
+        if (oldVersion < 11) {
+            agregarColumnaSiFalta(db, "herramientas", "esConsumible INTEGER DEFAULT 0")
+        }
     }
 
     private fun agregarColumnaSiFalta(db: SQLiteDatabase, tabla: String, definicion: String) {
@@ -418,6 +423,7 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             put("codigoQr", herramienta.codigoQr)
             put("requiereAsignarQr", if (herramienta.requiereAsignarQr) 1 else 0)
             put("vehiculoAsignado", herramienta.vehiculoAsignado)
+            put("esConsumible", if (herramienta.esConsumible) 1 else 0)
         }
         return writableDatabase.insert("herramientas", null, values)
     }
@@ -431,7 +437,12 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
     }
 
     fun actualizarOcupacionHerramienta(id: Long, cantidadOcupada: Double, responsable: String): Int {
-        val estado = if (cantidadOcupada <= 0.0) "Disponible" else "En uso"
+        val totalActual = obtenerHerramientaPorId(id)?.cantidadTotal ?: 1.0
+        val estado = when {
+            cantidadOcupada > 0.0 -> "En uso"
+            totalActual <= 0.0 -> "Agotado"
+            else -> "Disponible"
+        }
         val values = ContentValues().apply {
             put("estado", estado)
             put("responsable", if (cantidadOcupada <= 0.0) "" else responsable)
@@ -443,6 +454,28 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
     fun actualizarAsignacionVehiculo(id: Long, vehiculoAsignado: String): Int {
         val values = ContentValues().apply {
             put("vehiculoAsignado", vehiculoAsignado)
+        }
+        return writableDatabase.update("herramientas", values, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun actualizarConsumibleHerramienta(id: Long, esConsumible: Boolean): Int {
+        val values = ContentValues().apply {
+            put("esConsumible", if (esConsumible) 1 else 0)
+        }
+        return writableDatabase.update("herramientas", values, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun actualizarCantidadTotalHerramienta(id: Long, cantidadTotal: Double, cantidadOcupada: Double): Int {
+        val totalSeguro = cantidadTotal.coerceAtLeast(cantidadOcupada.coerceAtLeast(0.0))
+        val disponible = (totalSeguro - cantidadOcupada).coerceAtLeast(0.0)
+        val estado = when {
+            disponible <= 0.0 && cantidadOcupada <= 0.0 -> "Agotado"
+            cantidadOcupada > 0.0 -> "En uso"
+            else -> "Disponible"
+        }
+        val values = ContentValues().apply {
+            put("cantidadTotal", totalSeguro)
+            put("estado", estado)
         }
         return writableDatabase.update("herramientas", values, "id = ?", arrayOf(id.toString()))
     }
@@ -465,6 +498,7 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             put("codigoQr", herramienta.codigoQr)
             put("requiereAsignarQr", if (herramienta.requiereAsignarQr) 1 else 0)
             put("vehiculoAsignado", herramienta.vehiculoAsignado)
+            put("esConsumible", if (herramienta.esConsumible) 1 else 0)
         }
         return writableDatabase.update("herramientas", values, "id = ?", arrayOf(herramienta.id.toString()))
     }
@@ -534,6 +568,7 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                         codigoQr = cursorString(it, "codigoQr"),
                         requiereAsignarQr = cursorBool(it, "requiereAsignarQr"),
                         vehiculoAsignado = cursorString(it, "vehiculoAsignado"),
+                        esConsumible = cursorBool(it, "esConsumible"),
                     )
                 )
             }
@@ -588,6 +623,7 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             estado = existente?.estado ?: herramienta.estado,
             responsable = existente?.responsable ?: herramienta.responsable,
             cantidadOcupada = existente?.cantidadOcupada ?: herramienta.cantidadOcupada,
+            esConsumible = existente?.esConsumible ?: herramienta.esConsumible,
         )
         actualizarHerramientaCanonica(preservada)
         return existenteId
@@ -892,6 +928,7 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             codigoQr = cursorString(it, "codigoQr"),
             requiereAsignarQr = cursorBool(it, "requiereAsignarQr"),
             vehiculoAsignado = cursorString(it, "vehiculoAsignado"),
+            esConsumible = cursorBool(it, "esConsumible"),
         )
     }
 

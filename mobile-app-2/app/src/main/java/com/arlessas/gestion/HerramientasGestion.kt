@@ -92,6 +92,7 @@ internal fun MainActivity.dataHerramientaCloud(h: Herramienta, idLocal: Long, us
             "codigo_principal" to h.codigo,
             "codigo_qr" to h.codigoQr,
             "requiere_asignar_qr" to h.requiereAsignarQr,
+            "es_consumible" to h.esConsumible,
             "modulo" to TallerCanonicos.MODULO,
             "categoria" to h.subModulo,
             "submodulo_taller" to h.subModulo,
@@ -242,6 +243,7 @@ internal fun herramientaDesdeCanonico(item: TallerItemCanonico, existente: Herra
         cantidadOcupada = ocupados,
         codigoQr = item.codigoQr,
         requiereAsignarQr = item.requiereAsignarQr,
+        esConsumible = existente?.esConsumible ?: false,
     )
 }
 
@@ -504,6 +506,7 @@ internal fun PrestamoTallerActivo.nombreAsignado(): String {
 
 internal fun Movimiento.esSalidaPrestamoTaller(): Boolean {
     return TallerCanonicos.esModuloTaller(modulo) &&
+        !tipoMovimiento.equals(TallerCanonicos.TIPO_MOV_SALIDA_DEFINITIVA, ignoreCase = true) &&
         tipoMovimiento.contains("salida", ignoreCase = true)
 }
 
@@ -816,6 +819,32 @@ internal fun numeroDocumento(doc: com.google.firebase.firestore.DocumentSnapshot
     return 0.0
 }
 
+internal fun numeroDocumentoOpcional(doc: com.google.firebase.firestore.DocumentSnapshot, vararg keys: String): Double? {
+    keys.forEach { key ->
+        val numero = when (val value = doc.get(key)) {
+            is Number -> value.toDouble()
+            is String -> value.toDoubleOrNull()
+            else -> null
+        }
+        if (numero != null && numero.isFinite()) return numero
+    }
+    return null
+}
+
+internal fun booleanoDocumento(doc: com.google.firebase.firestore.DocumentSnapshot, vararg keys: String): Boolean {
+    keys.forEach { key ->
+        when (val value = doc.get(key)) {
+            is Boolean -> return value
+            is Number -> return value.toInt() != 0
+            is String -> when (value.trim().lowercase(Locale.getDefault())) {
+                "true", "1", "si", "sí" -> return true
+                "false", "0", "no" -> return false
+            }
+        }
+    }
+    return false
+}
+
 internal fun enteroDocumento(doc: com.google.firebase.firestore.DocumentSnapshot, vararg keys: String): Int? {
     keys.forEach { key ->
         when (val value = doc.get(key)) {
@@ -830,7 +859,9 @@ internal fun herramientaDesdeDocumentoFirestore(doc: com.google.firebase.firesto
     val nombre = docTexto(doc, "nombre", "item", "producto", "descripcion")
     if (nombre.isBlank()) return null
     val codigo = docTexto(doc, "codigo_principal", "codigo", "codigo_qr", "codigo_interno", "clave").ifBlank { doc.id }
-    val cantidadTotal = numeroDocumento(doc, "cantidad_total", "stock_total", "cantidad").let { if (it > 0.0) it else 1.0 }
+    val cantidadTotal = numeroDocumentoOpcional(doc, "cantidad_total", "stock_total", "cantidad")
+        ?.takeIf { it >= 0.0 }
+        ?: 1.0
     val subModulo = TallerCanonicos.resolverSubmoduloDesdeCampos(
         submoduloTaller = docTexto(doc, "submodulo_taller", "submodulo", "seccion"),
         categoria = docTexto(doc, "categoria"),
@@ -864,6 +895,7 @@ internal fun herramientaDesdeDocumentoFirestore(doc: com.google.firebase.firesto
         requiereAsignarQr = doc.getBoolean("requiere_asignar_qr")
             ?: (codigo.startsWith("SINQR", true) && docTexto(doc, "codigo_qr").isBlank()),
         vehiculoAsignado = docTexto(doc, "vehiculo_asignado", "vehiculoAsignado"),
+        esConsumible = booleanoDocumento(doc, "es_consumible", "consumible"),
     )
 }
 
@@ -1755,7 +1787,15 @@ internal fun MainActivity.showTallerSubmoduloMenu(subModulo: String) {
                     ArlesPalette.blueAction,
                 ) { showIngresoProductoBodegaRojaForm() },
             )
-            val hayStockParaPrestamo = items.any { it.disponibles() > 0.0 }
+            root.addView(
+                actionCard(
+                    "Salida definitiva",
+                    "Entregar consumibles de uso rápido y descontarlos permanentemente",
+                    R.drawable.ic_door_open,
+                    ArlesPalette.warning,
+                ) { showSalidaDefinitivaBodegaRoja() },
+            )
+            val hayStockParaPrestamo = items.any { !it.esConsumible && it.disponibles() > 0.0 }
             if (hayStockParaPrestamo) {
                 root.addView(
                     actionCard(
@@ -2159,6 +2199,7 @@ internal fun MainActivity.showRegistroHerramientaForm(
             lateinit var unidad: EditText
             lateinit var cantidadTotal: EditText
             lateinit var requiereQr: android.widget.CheckBox
+            lateinit var consumibleRapido: android.widget.CheckBox
             lateinit var estado: Spinner
             lateinit var ubicacion: EditText
             lateinit var responsable: EditText
@@ -2241,6 +2282,14 @@ internal fun MainActivity.showRegistroHerramientaForm(
                     isChecked = prefRequiereAsignarQr
                 }
                 section.addView(requiereQr)
+                consumibleRapido = android.widget.CheckBox(this).apply {
+                    text = "Producto consumible de uso rápido"
+                    textSize = 14f
+                    setTextColor(texto)
+                    isChecked = false
+                    visibility = if (esIngresoBodegaNuevo) View.VISIBLE else View.GONE
+                }
+                section.addView(consumibleRapido)
             }
 
             formSectionCard(
@@ -2323,6 +2372,7 @@ internal fun MainActivity.showRegistroHerramientaForm(
                     cantidadOcupada = 0.0,
                     codigoQr = qrNormalizado,
                     requiereAsignarQr = requiereQr.isChecked || codigoPrincipal.startsWith("SINQR", true),
+                    esConsumible = consumibleRapido.isChecked,
                 )
                 val herramientaIdLocal = if (esIngresoBodegaNuevo) {
                     db.insertarHerramienta(herramientaNueva)
@@ -2487,7 +2537,10 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
                 // Para Salidas solo mostramos ítems con stock disponible.
                 // Esto bloquea las salidas una vez que todas las existencias han sido prestadas (ocupados == total).
                 herramientasTallerFiltradas(subModulo)
-                    .filter { it.disponibles() > 0.0 }
+                    .filter {
+                        it.disponibles() > 0.0 &&
+                            (!TallerCanonicos.esBodegaRojaTaller(subModulo) || !it.esConsumible)
+                    }
                     .sortedWith(compareBy<Herramienta> { it.categoriaTaller() }.thenBy { it.nombre }.thenBy { it.tamano })
             }
             val categoriasDisponibles = if (esEntrada) {
@@ -2878,6 +2931,14 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
 
             fun seleccionarHerramientaPorCodigo(texto: String): Boolean {
                 val encontrada = buscarHerramientaTallerPorCodigo(texto) ?: return false
+                if (!esEntrada && TallerCanonicos.esBodegaRojaTaller(subModulo) && encontrada.esConsumible) {
+                    Toast.makeText(
+                        this,
+                        "Este producto es consumible. Usa Salida definitiva en Bodega Roja.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    return true
+                }
                 if (esEntrada && !encontrada.estaEnPrestamo()) {
                     Toast.makeText(
                         this,
@@ -3805,6 +3866,7 @@ internal fun MainActivity.renderInventarioTallerPlanilla(filtroInicial: String =
             h.textoDisponibilidad() + "\n" +
             "QR: ${h.codigoQr.ifBlank { "-" }}\n" +
             "Requiere asignar QR: ${if (h.requiereAsignarQr) "Sí" else "No"}\n" +
+            "Consumible de uso rápido: ${if (h.esConsumible) "Sí" else "No"}\n" +
             "Responsable actual: ${h.responsable.ifBlank { "Bodega" }}\n" +
             "Observaciones: ${h.observaciones.ifBlank { "Sin notas" }}"
     }
@@ -3828,11 +3890,16 @@ internal fun MainActivity.renderInventarioTallerPlanilla(filtroInicial: String =
                 accent = accent,
                 enPrestamo = enPrestamo,
             ) {
-                AlertDialog.Builder(activity)
+                val detalleDialog = AlertDialog.Builder(activity)
                     .setTitle("Detalle del ítem")
                     .setMessage(detalleHerramientaDialogo(h))
                     .setPositiveButton("Cerrar", null)
-                    .show()
+                if (TallerCanonicos.esBodegaRojaTaller(h.subModulo)) {
+                    detalleDialog.setNeutralButton(
+                        if (h.esConsumible) "Quitar marca de consumible" else "Marcar como consumible",
+                    ) { _, _ -> confirmarCambioConsumibleBodega(h) }
+                }
+                detalleDialog.show()
             },
         )
     }
