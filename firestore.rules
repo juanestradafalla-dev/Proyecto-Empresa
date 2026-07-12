@@ -47,6 +47,24 @@ service cloud.firestore {
       ]);
     }
 
+    function isValidInventoryValuation() {
+      return request.resource.data.keys().hasOnly([
+          "valor_unitario",
+          "modulo",
+          "codigo",
+          "descripcion",
+          "actualizado_por",
+          "actualizado_en"
+        ])
+        && request.resource.data.valor_unitario is number
+        && request.resource.data.valor_unitario >= 0
+        && request.resource.data.modulo is string
+        && request.resource.data.codigo is string
+        && request.resource.data.descripcion is string
+        && request.resource.data.actualizado_por is string
+        && request.resource.data.actualizado_en is timestamp;
+    }
+
     function isSharedBusinessCollection(collectionName) {
       return collectionName in [
         // GestionAndroid apps + desktop-program
@@ -214,6 +232,11 @@ service cloud.firestore {
         );
 
       allow delete: if isOwner();
+    }
+
+    match /valoraciones_inventario/{valoracionId} {
+      allow read: if isActiveUser();
+      allow create, update: if isActiveUser() && isValidInventoryValuation();
     }
 
     match /{collectionName}/{document=**} {
