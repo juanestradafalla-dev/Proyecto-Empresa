@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   Camera,
   ChevronDown,
+  CircleDollarSign,
   ExternalLink,
   Eye,
   FileSpreadsheet,
@@ -20,7 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User } from 'firebase/auth';
-import { collection, doc, onSnapshot, QueryDocumentSnapshot, updateDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, QueryDocumentSnapshot, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import {
   AGROQUIMICOS_UBICACIONES,
@@ -72,6 +73,7 @@ function moduleIcon(moduleName: string) {
 
 type InventoryItem = {
   id: string;
+  valuationId: string;
   modulo: string;
   codigo: string;
   descripcion: string;
@@ -145,6 +147,8 @@ type Totals = Record<string, { entradas: number; salidas: number }>;
 
 type StatusOrder = 'default' | 'good-first' | 'maintenance-first';
 
+type ValuationSaveState = 'saving' | 'saved' | 'error';
+
 type PanelCache = {
   version: 1;
   inventory: InventoryItem[];
@@ -170,9 +174,9 @@ function loadPanelCache(): PanelCache | null {
     if (!Array.isArray(parsed.inventory) || !Array.isArray(parsed.tools) || !Array.isArray(parsed.movements)) return null;
     return {
       version: 1,
-      inventory: parsed.inventory,
-      aseoInventory: Array.isArray(parsed.aseoInventory) ? parsed.aseoInventory : [],
-      tools: parsed.tools,
+      inventory: parsed.inventory.map(withValuationId),
+      aseoInventory: Array.isArray(parsed.aseoInventory) ? parsed.aseoInventory.map(withValuationId) : [],
+      tools: parsed.tools.map(withValuationId),
       movements: parsed.movements,
       users: parsed.users && typeof parsed.users === 'object' ? parsed.users : {},
       lastSync: typeof parsed.lastSync === 'string' ? parsed.lastSync : '',
@@ -209,6 +213,36 @@ function numberValue(data: Record<string, unknown>, ...keys: string[]) {
     }
   }
   return 0;
+}
+
+function valuationDocumentId(source: string, id: string) {
+  return `${source}__${encodeURIComponent(id)}`;
+}
+
+function withValuationId(item: InventoryItem): InventoryItem {
+  if (item.valuationId) return item;
+  if (item.id.startsWith('aseo-')) {
+    return { ...item, valuationId: valuationDocumentId('productos_aseo', item.id.replace(/^aseo-/, '')) };
+  }
+  if (item.id.startsWith('herramienta-')) {
+    return { ...item, valuationId: valuationDocumentId('herramientas', item.id.replace(/^herramienta-/, '')) };
+  }
+  if (item.id.startsWith('fallback-')) {
+    return { ...item, valuationId: valuationDocumentId('catalogo_respaldo', item.id.replace(/^fallback-/, '')) };
+  }
+  return { ...item, valuationId: valuationDocumentId('existencias', item.id) };
+}
+
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat('es-CO', {
+    style: 'currency',
+    currency: 'COP',
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function valuationQuantity(item: InventoryItem) {
+  return Math.max(item.total ?? item.saldo, 0);
 }
 
 function findValueByKeyPart(data: Record<string, unknown>, parts: string[]): string {
@@ -322,6 +356,7 @@ function readInventoryDoc(doc: QueryDocumentSnapshot): InventoryItem {
 
   return {
     id: doc.id,
+    valuationId: valuationDocumentId('existencias', doc.id),
     modulo,
     codigo,
     descripcion: item,
@@ -343,6 +378,7 @@ function readAseoDoc(doc: QueryDocumentSnapshot): InventoryItem {
 
   return {
     id: `aseo-${doc.id}`,
+    valuationId: valuationDocumentId('productos_aseo', doc.id),
     modulo: 'ASEO',
     codigo,
     descripcion: textValue(data, 'producto', 'item', 'nombre') || doc.id,
@@ -381,6 +417,7 @@ function readToolDoc(doc: QueryDocumentSnapshot): InventoryItem {
 
   return {
     id: `herramienta-${doc.id}`,
+    valuationId: valuationDocumentId('herramientas', doc.id),
     modulo: textValue(data, 'modulo') || 'Taller',
     codigo,
     descripcion: textValue(data, 'nombre', 'item', 'producto') || doc.id,
@@ -402,6 +439,7 @@ function readToolDoc(doc: QueryDocumentSnapshot): InventoryItem {
 function fallbackTool(codigo: string, subcategoria: string, descripcion: string, caracteristica: string, saldo: number, unidad = 'UNIDAD'): InventoryItem {
   return {
     id: `fallback-${codigo}`,
+    valuationId: valuationDocumentId('catalogo_respaldo', codigo),
     modulo: 'Taller',
     codigo,
     descripcion,
@@ -936,6 +974,9 @@ function AppShell({ user }: { user: User }) {
   const [tools, setTools] = useState<InventoryItem[]>(() => cachedPanelData?.tools ?? []);
   const [movements, setMovements] = useState<Movement[]>(() => cachedPanelData?.movements ?? []);
   const [users, setUsers] = useState<Record<string, UserProfile>>(() => cachedPanelData?.users ?? {});
+  const [valuations, setValuations] = useState<Record<string, number>>({});
+  const [valuationDrafts, setValuationDrafts] = useState<Record<string, string>>({});
+  const [valuationSaveStates, setValuationSaveStates] = useState<Record<string, ValuationSaveState>>({});
   const [evidenceMovement, setEvidenceMovement] = useState<Movement | null>(null);
   const [showOccupiedModal, setShowOccupiedModal] = useState(false);
   const [showEntriesModal, setShowEntriesModal] = useState(false);
@@ -1037,12 +1078,26 @@ function AppShell({ user }: { user: User }) {
       () => setError('No pude leer usuarios. Verifica permisos en Firebase.'),
     );
 
+    const unsubscribeValuations = onSnapshot(
+      collection(db, 'valoraciones_inventario'),
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        const entries = snapshot.docs.map((valuationDoc): [string, number] => {
+          const value = numberValue(valuationDoc.data(), 'valor_unitario');
+          return [valuationDoc.id, Math.max(value, 0)];
+        });
+        setValuations(Object.fromEntries(entries));
+      },
+      () => setError('No pude leer la valoración del inventario. Verifica permisos en Firebase.'),
+    );
+
     return () => {
       unsubscribeInventory();
       unsubscribeAseoInventory();
       unsubscribeMovements();
       unsubscribeTools();
       unsubscribeUsers();
+      unsubscribeValuations();
     };
   }, []);
 
@@ -1130,6 +1185,109 @@ function AppShell({ user }: { user: User }) {
     } catch (error) {
       console.error('No pude actualizar el estado del item Taller:', error);
     }
+  }
+
+  function updateValuationDraft(item: InventoryItem, value: string) {
+    setValuationDrafts((prev) => ({ ...prev, [item.valuationId]: value }));
+    setValuationSaveStates((prev) => {
+      const next = { ...prev };
+      delete next[item.valuationId];
+      return next;
+    });
+  }
+
+  function resetValuationDraft(item: InventoryItem) {
+    setValuationDrafts((prev) => {
+      const next = { ...prev };
+      delete next[item.valuationId];
+      return next;
+    });
+  }
+
+  async function saveUnitValuation(item: InventoryItem) {
+    const rawValue = valuationDrafts[item.valuationId];
+    if (rawValue === undefined) return;
+    if (!rawValue.trim()) {
+      resetValuationDraft(item);
+      return;
+    }
+
+    const unitValue = Number(rawValue.replace(',', '.'));
+    if (!Number.isFinite(unitValue) || unitValue < 0) {
+      setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'error' }));
+      setError('El valor unitario debe ser un número igual o mayor que cero.');
+      return;
+    }
+
+    if (unitValue === (valuations[item.valuationId] ?? 0)) {
+      resetValuationDraft(item);
+      return;
+    }
+
+    setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'saving' }));
+    try {
+      await setDoc(doc(db, 'valoraciones_inventario', item.valuationId), {
+        valor_unitario: unitValue,
+        modulo: item.modulo,
+        codigo: item.codigo,
+        descripcion: item.descripcion,
+        actualizado_por: user.email || user.uid,
+        actualizado_en: serverTimestamp(),
+      }, { merge: true });
+      setValuations((prev) => ({ ...prev, [item.valuationId]: unitValue }));
+      resetValuationDraft(item);
+      setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'saved' }));
+      setError('');
+    } catch (error) {
+      console.error('No pude guardar la valoración unitaria:', error);
+      setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'error' }));
+      setError('No se pudo guardar el valor unitario. Verifica la conexión y los permisos de Firebase.');
+    }
+  }
+
+  function renderValuationCells(item: InventoryItem) {
+    const unitValue = valuations[item.valuationId] ?? 0;
+    const inputValue = valuationDrafts[item.valuationId] ?? (unitValue > 0 ? String(unitValue) : '');
+    const saveState = valuationSaveStates[item.valuationId];
+    const saveLabel = saveState === 'saving'
+      ? 'Guardando...'
+      : saveState === 'saved'
+        ? 'Guardado'
+        : saveState === 'error'
+          ? 'Revisa el valor'
+          : '';
+    const disabled = !online || usingTallerFallback;
+
+    return (
+      <>
+        <td className="valuation-unit-cell">
+          <label className={`valuation-input ${saveState ?? ''}`} title={disabled ? 'Conéctate a Firestore para editar la valoración.' : 'Se guarda al salir del campo o presionar Enter.'}>
+            <span>$</span>
+            <input
+              aria-label={`Valor unitario de ${item.descripcion}`}
+              type="number"
+              min="0"
+              step="1"
+              inputMode="decimal"
+              placeholder="0"
+              value={inputValue}
+              disabled={disabled || saveState === 'saving'}
+              onChange={(event) => updateValuationDraft(item, event.target.value)}
+              onBlur={() => saveUnitValuation(item)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  resetValuationDraft(item);
+                }
+              }}
+            />
+          </label>
+          {saveLabel && <small className={`valuation-save-state ${saveState}`}>{saveLabel}</small>}
+        </td>
+        <td className="numeric valuation-total">{formatCurrency(unitValue * valuationQuantity(item))}</td>
+      </>
+    );
   }
 
   const isTallerModule = module === 'TALLER';
@@ -1271,7 +1429,7 @@ function AppShell({ user }: { user: User }) {
 
   const exits = filteredExits.slice(0, movementLimit);
   const hasExitFilters = Boolean(exitDateFrom || exitDateTo || exitCode.trim() || exitPerson.trim() || exitItem.trim());
-  const inventoryColumnCount = isTallerModule ? 8 : module === 'Agroquimicos' ? 9 : isLubricantesTallerModule ? 7 : 8;
+  const inventoryColumnCount = isTallerModule ? 10 : module === 'Agroquimicos' ? 11 : isLubricantesTallerModule ? 9 : 10;
   const totalSaldo = isTallerModule
     ? moduleInventory.reduce((sum, item) => sum + item.saldo, 0)
     : moduleInventory.reduce((sum, item) => sum + item.saldo, 0);
@@ -1281,6 +1439,10 @@ function AppShell({ user }: { user: User }) {
   const lowStock = isTallerModule
     ? moduleInventory.filter((item) => item.requiereQr || (item.ocupados ?? 0) > 0 || normalize(item.estado ?? '').includes('uso')).length
     : moduleInventory.filter((item) => item.saldo <= 3).length;
+  const totalValuation = moduleInventory.reduce(
+    (sum, item) => sum + (valuations[item.valuationId] ?? 0) * valuationQuantity(item),
+    0,
+  );
   const syncMode = !online ? 'offline' : usingCachedData ? 'cached' : 'online';
   const syncLabel = !online ? 'Sin internet' : usingCachedData ? 'Copia local' : 'En vivo';
 
@@ -1507,6 +1669,11 @@ function AppShell({ user }: { user: User }) {
             <span>Movimientos</span>
             <strong>{moduleMovements.length}</strong>
           </article>
+          <article className="valuation-kpi">
+            <CircleDollarSign size={20} />
+            <span>Valor inventario</span>
+            <strong>{formatCurrency(totalValuation)}</strong>
+          </article>
         </section>
 
         <section className="dashboard-grid" key={`dashboard-${module}-${tallerSubmodulo || agroquimicosUbicacion || 'todos'}`}>
@@ -1514,7 +1681,7 @@ function AppShell({ user }: { user: User }) {
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Inventario actual</p>
-                <h2>Control de saldos</h2>
+                <h2>Control de saldos y valoración</h2>
               </div>
               <Eye size={20} />
             </div>
@@ -1553,6 +1720,8 @@ function AppShell({ user }: { user: User }) {
                         <th className="numeric">Saldo</th>
                       </>
                     )}
+                    <th className="numeric col-valuation-unit">Valor unitario</th>
+                    <th className="numeric col-valuation-total">Valor total</th>
                     <th className="col-unit">Unidad</th>
                     <th className="col-status">Estado</th>
                   </tr>
@@ -1570,6 +1739,7 @@ function AppShell({ user }: { user: User }) {
                           <td className="numeric">{formatNumber(item.total ?? item.saldo)}</td>
                           <td className={balanceClassName(item.saldo)}>{formatNumber(item.saldo)}</td>
                           <td className="numeric">{formatNumber(item.ocupados ?? 0)}</td>
+                          {renderValuationCells(item)}
                           <td className="col-unit">{item.unidad}</td>
                           <td className="col-status">
                             <span className={`status ${status.className}`}>{status.label}</span>
@@ -1598,6 +1768,7 @@ function AppShell({ user }: { user: User }) {
                             <td className="numeric">{formatNumber(itemTotals.entradas)}</td>
                             <td className="numeric">{formatNumber(itemTotals.salidas)}</td>
                             <td className={balanceClassName(item.saldo)}>{formatNumber(item.saldo)}</td>
+                            {renderValuationCells(item)}
                             <td className="col-unit">{item.unidad}</td>
                             <td className="col-status"><span className={`status ${status.className}`}>{status.label}</span></td>
                           </tr>
@@ -1613,6 +1784,7 @@ function AppShell({ user }: { user: User }) {
                             <td className="numeric">{formatNumber(itemTotals.entradas)}</td>
                             <td className="numeric">{formatNumber(itemTotals.salidas)}</td>
                             <td className={balanceClassName(item.saldo)}>{formatNumber(item.saldo)}</td>
+                            {renderValuationCells(item)}
                             <td className="col-unit">{item.unidad}</td>
                             <td className="col-status"><span className={`status ${status.className}`}>{status.label}</span></td>
                           </tr>
@@ -1629,6 +1801,7 @@ function AppShell({ user }: { user: User }) {
                             <td className="numeric">{formatNumber(itemTotals.entradas)}</td>
                             <td className="numeric">{formatNumber(itemTotals.salidas)}</td>
                             <td className={balanceClassName(item.saldo)}>{formatNumber(item.saldo)}</td>
+                            {renderValuationCells(item)}
                             <td className="col-unit">{item.unidad}</td>
                             <td className="col-status"><span className={`status ${status.className}`}>{status.label}</span></td>
                           </tr>

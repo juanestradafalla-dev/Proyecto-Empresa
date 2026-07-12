@@ -741,7 +741,7 @@ h2 {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -770,6 +770,11 @@ h2 {
 .kpi-grid strong {
   color: var(--green-900);
   font-size: 1.25rem;
+}
+
+.valuation-kpi strong {
+  font-size: clamp(1rem, 1.15vw, 1.25rem);
+  white-space: nowrap;
 }
 
 .kpi-card {
@@ -866,6 +871,97 @@ h2 {
 
 .status-toggle-button:hover {
   background: var(--green-100);
+}
+
+.inventory-table th.col-valuation-unit,
+.inventory-table td.valuation-unit-cell,
+.inventory-table th.col-valuation-total,
+.inventory-table td.valuation-total {
+  min-width: 8.5rem;
+}
+
+.valuation-unit-cell {
+  text-align: right;
+}
+
+.valuation-input {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: white;
+  color: var(--muted);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.valuation-input:focus-within {
+  border-color: var(--module-accent, var(--green-500));
+  box-shadow: 0 0 0 3px rgba(5, 166, 75, 0.12);
+}
+
+.valuation-input.saving {
+  opacity: 0.72;
+}
+
+.valuation-input.saved {
+  border-color: var(--green-500);
+}
+
+.valuation-input.error {
+  border-color: var(--danger);
+}
+
+.valuation-input input {
+  width: 6rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+}
+
+.valuation-input input:disabled {
+  cursor: not-allowed;
+}
+
+.valuation-input input::-webkit-inner-spin-button,
+.valuation-input input::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.valuation-save-state {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.66rem;
+  text-align: right;
+}
+
+.valuation-save-state.saving {
+  color: var(--muted);
+}
+
+.valuation-save-state.saved {
+  color: var(--green-700);
+}
+
+.valuation-save-state.error {
+  color: var(--danger);
+}
+
+.valuation-total {
+  color: var(--green-900);
+  font-weight: 800;
+  white-space: nowrap !important;
 }
 
 .table-wrap {
