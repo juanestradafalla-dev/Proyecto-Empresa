@@ -1347,6 +1347,13 @@ function AppShell({ user }: { user: User }) {
         || a.descripcion.localeCompare(b.descripcion)
       ));
   }, [aseoInventory, inventory, toolsInventory]);
+  const valuationModuleOptions = useMemo(() => {
+    const knownModules = new Set<string>(operationalModules);
+    const additionalModules = valuationInventory
+      .map(valuationModuleForItem)
+      .filter((moduleName) => !knownModules.has(moduleName));
+    return [...operationalModules, ...Array.from(new Set(additionalModules)).sort((a, b) => a.localeCompare(b))];
+  }, [valuationInventory]);
   const filteredValuationInventory = useMemo(() => {
     const query = normalize(search);
     return valuationInventory.filter((item) => {
@@ -1378,7 +1385,7 @@ function AppShell({ user }: { user: User }) {
     let valuedCount = 0;
     let grandTotal = 0;
     const totalsByModule = new Map<string, { moduleName: string; productCount: number; valuedCount: number; total: number }>(
-      operationalModules.map((moduleName) => [moduleName, { moduleName, productCount: 0, valuedCount: 0, total: 0 }]),
+      valuationModuleOptions.map((moduleName) => [moduleName, { moduleName, productCount: 0, valuedCount: 0, total: 0 }]),
     );
 
     valuationInventory.forEach((item) => {
@@ -1398,9 +1405,9 @@ function AppShell({ user }: { user: User }) {
       valuedProductCount: valuedCount,
       unvaluedProductCount: valuationInventory.length - valuedCount,
       inventoryGrandTotal: grandTotal,
-      valuationModuleTotals: operationalModules.map((moduleName) => totalsByModule.get(moduleName)!),
+      valuationModuleTotals: valuationModuleOptions.map((moduleName) => totalsByModule.get(moduleName)!),
     };
-  }, [valuationInventory, valuations]);
+  }, [valuationInventory, valuationModuleOptions, valuations]);
   const usingTallerFallback = isTallerModule && tools.length === 0 && toolsInventory.length > 0;
   const moduleInventoryBase = useMemo(() => {
     const operationalInventory = inventory.filter((item) => !moduleMatches(item.modulo, 'ASEO'));
@@ -1637,7 +1644,7 @@ function AppShell({ user }: { user: User }) {
                   <span>Módulo:</span>
                   <select value={valuationModuleFilter} onChange={(event) => setValuationModuleFilter(event.target.value)}>
                     <option value="all">Todos</option>
-                    {operationalModules.map((moduleName) => <option key={moduleName} value={moduleName}>{moduleName}</option>)}
+                    {valuationModuleOptions.map((moduleName) => <option key={moduleName} value={moduleName}>{moduleName}</option>)}
                   </select>
                 </label>
                 <label className="status-sort valuation-filter">
