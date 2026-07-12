@@ -1307,11 +1307,14 @@ internal fun inferirTipoMovimientoTaller(herramienta: Herramienta): String {
 /**
  * Diálogo para seleccionar múltiples implementos agrícolas disponibles
  * para asignar a un vehículo al momento de la salida.
- * Al seleccionar, se registrarán salidas automáticas con los mismos datos del vehículo.
+ * La selección se registra junto al vehículo mediante el flujo transaccional agrupado.
  */
-internal fun MainActivity.mostrarDialogoSeleccionImplementos(onSeleccionados: (List<Herramienta>) -> Unit) {
+internal fun MainActivity.mostrarDialogoSeleccionImplementos(
+    preseleccionados: List<Herramienta> = emptyList(),
+    onSeleccionados: (List<Herramienta>) -> Unit,
+) {
     val implementsDisponibles = herramientasTallerFiltradas("IMPLEMENTOS AGRICOLAS")
-        .filter { it.disponibles() > 0.0 }
+        .filter { it.disponibles() > 0.0 && it.ocupados() <= 0.0 && it.vehiculoAsignado.isBlank() }
         .sortedBy { it.nombre }
 
     if (implementsDisponibles.isEmpty()) {
@@ -1324,7 +1327,10 @@ internal fun MainActivity.mostrarDialogoSeleccionImplementos(onSeleccionados: (L
         "${impl.nombre}${if (detalle.isNotBlank()) " · $detalle" else ""} (${impl.codigo.ifBlank { impl.subcategoria }})"
     }.toTypedArray()
 
-    val checked = BooleanArray(nombres.size) { false }
+    val clavesPreseleccionadas = preseleccionados.map(::claveHerramientaCloud).toSet()
+    val checked = BooleanArray(nombres.size) { index ->
+        claveHerramientaCloud(implementsDisponibles[index]) in clavesPreseleccionadas
+    }
 
     AlertDialog.Builder(this)
         .setTitle("Implementos a llevar con el vehículo")
@@ -2833,18 +2839,33 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
             // Soporte para asignación automática de implementos a vehículos
             var implementosSeleccionados: List<Herramienta> = emptyList()
             val esVehiculoSubmodulo = subModulo.uppercase().contains("VEHICULO")
+            val fotosVehiculoBorrador = if (!esEntrada && esVehiculoSubmodulo) {
+                nuevoBorradorFotosVehiculo()
+            } else {
+                null
+            }
+            var evidenciaIndividualContainer: LinearLayout? = null
+            var fotosAgrupadasContainer: LinearLayout? = null
+            var tarjetasFotosContainer: LinearLayout? = null
+            var resumenFotosLabel: TextView? = null
+            var estadoRegistroLabel: TextView? = null
+            var confirmarMovimientoButton: View? = null
+            var refrescarFotosAgrupadas: () -> Unit = {}
 
             // Solo mostrar el selector de implementos en SALIDAS de vehículos
             if (!esEntrada && esVehiculoSubmodulo) {
-                formSectionCard(root, "3", "Implementos a llevar", "Al guardar la salida del vehículo se registrarán automáticamente las salidas de los implementos seleccionados con los mismos datos", accent) { section ->
+                formSectionCard(root, "3", "Implementos a llevar", "Vehículo e implementos se registran juntos, cada uno con su propia foto", accent) { section ->
                     val infoTxt = TextView(this).apply {
                         text = "Ningún implemento seleccionado aún"
                         setPadding(0, dp(4), 0, 0)
                     }
 
                     val btn = styledButton("Seleccionar implementos agrícolas", ArlesButtonStyle.TALLER) {
-                        mostrarDialogoSeleccionImplementos { seleccionados ->
+                        if (fotosVehiculoBorrador?.procesando == true) return@styledButton
+                        mostrarDialogoSeleccionImplementos(implementosSeleccionados) { seleccionados ->
+                            if (fotosVehiculoBorrador?.procesando == true) return@mostrarDialogoSeleccionImplementos
                             implementosSeleccionados = seleccionados
+                            refrescarFotosAgrupadas()
                             infoTxt.text = if (seleccionados.isEmpty()) "Ningún implemento seleccionado aún" else
                                 "Asignados: " + seleccionados.joinToString(", ") { it.nombre }
                             Toast.makeText(this, "${seleccionados.size} implemento(s) seleccionado(s) para el vehículo", Toast.LENGTH_SHORT).show()
@@ -2903,7 +2924,9 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
 
             herramienta.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (fotosVehiculoBorrador?.procesando == true) return
                     actualizarDisponibilidad()
+                    refrescarFotosAgrupadas()
                 }
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
@@ -2911,6 +2934,7 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
             codigoBusqueda.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    if (fotosVehiculoBorrador?.procesando == true) return
                     val texto = s?.toString().orEmpty()
                     if (!seleccionarHerramientaPorCodigo(texto)) {
                         aplicarFiltroTextoHerramienta(texto)
@@ -2922,6 +2946,7 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
             busquedaNombre.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    if (fotosVehiculoBorrador?.procesando == true) return
                     aplicarFiltroNombreHerramienta(s?.toString().orEmpty())
                 }
                 override fun afterTextChanged(s: Editable?) {}
@@ -2950,19 +2975,98 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
             observaciones.setText(prefObservaciones)
             actualizarDisponibilidad()
 
-            formSectionCard(root, "3", "Evidencia y confirmación", "Opcional pero recomendado en préstamos", accent) { section ->
-                section.addView(evidenceButton {
+            formSectionCard(
+                root,
+                "3",
+                "Evidencia y confirmación",
+                if (fotosVehiculoBorrador != null) "Foto individual o fotos obligatorias por elemento" else "Opcional pero recomendado en préstamos",
+                accent,
+            ) { section ->
+                evidenciaIndividualContainer = if (fotosVehiculoBorrador != null) {
+                    LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                } else {
+                    section
+                }
+                evidenciaIndividualContainer?.addView(evidenceButton {
+                    if (fotosVehiculoBorrador?.procesando == true) return@evidenceButton
                     capturarEvidencia { uri ->
                         uriLocalEvidencia = uri
-                        mostrarPrevisualizacionEvidencia(root, uri) {
+                        val previewTarget = if (fotosVehiculoBorrador != null) {
+                            evidenciaIndividualContainer ?: root
+                        } else {
+                            root
+                        }
+                        mostrarPrevisualizacionEvidencia(previewTarget, uri) {
                             uriLocalEvidencia = ""
                             urlEvidencia = ""
                         }
-                        if (isNetworkAvailable()) {
+                        if (isNetworkAvailable() && fotosVehiculoBorrador == null) {
                             subirEvidenciaCloud(uri, TallerCanonicos.MODULO) { url -> urlEvidencia = url }
                         }
                     }
                 })
+                if (fotosVehiculoBorrador != null) section.addView(evidenciaIndividualContainer)
+
+                if (fotosVehiculoBorrador != null) {
+                    fotosAgrupadasContainer = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        visibility = View.GONE
+                        addView(TextView(context).apply {
+                            text = "Fotografías de la asignación"
+                            textSize = 17f
+                            setTextColor(ArlesPalette.ink)
+                            setTypeface(typeface, android.graphics.Typeface.BOLD)
+                        })
+                        resumenFotosLabel = TextView(context).apply {
+                            setTextColor(ArlesPalette.muted)
+                            setPadding(0, dp(4), 0, dp(4))
+                        }
+                        addView(resumenFotosLabel)
+                        tarjetasFotosContainer = LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                        }
+                        addView(tarjetasFotosContainer)
+                    }
+                    section.addView(fotosAgrupadasContainer)
+                    estadoRegistroLabel = TextView(this).apply {
+                        setTextColor(ArlesPalette.muted)
+                        setPadding(0, dp(6), 0, dp(4))
+                    }
+                    section.addView(estadoRegistroLabel)
+                }
+
+                refrescarFotosAgrupadas = {
+                    val agrupada = fotosVehiculoBorrador != null && implementosSeleccionados.isNotEmpty()
+                    evidenciaIndividualContainer?.visibility = if (agrupada) View.GONE else View.VISIBLE
+                    fotosAgrupadasContainer?.visibility = if (agrupada) View.VISIBLE else View.GONE
+                    if (agrupada) {
+                        val vehiculoActual = herramientaSeleccionada()
+                        tarjetasFotosContainer?.let { tarjetas ->
+                            renderFotosVehiculoImplementos(
+                                fotosVehiculoBorrador,
+                                tarjetas,
+                                vehiculoActual,
+                                implementosSeleccionados,
+                            ) { refrescarFotosAgrupadas() }
+                        }
+                        val elementos = listOf(vehiculoActual) + implementosSeleccionados
+                        val listas = elementos.count { fotosVehiculoBorrador.fotoLista(claveHerramientaCloud(it)) }
+                        resumenFotosLabel?.text = "Fotos listas: $listas de ${elementos.size}"
+                        resumenFotosLabel?.setTextColor(
+                            if (listas == elementos.size) ArlesPalette.green800 else ArlesPalette.danger,
+                        )
+                        confirmarMovimientoButton?.apply {
+                            isEnabled = listas == elementos.size
+                            alpha = if (isEnabled) 1f else 0.55f
+                        }
+                    } else {
+                        confirmarMovimientoButton?.apply {
+                            isEnabled = true
+                            alpha = 1f
+                        }
+                    }
+                }
+                refrescarFotosAgrupadas()
                 val guardarLabel = if (tipoMovimiento.equals("Salida", true)) {
                     "Confirmar salida temporal"
                 } else {
@@ -2996,6 +3100,93 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
                 }
                 if (tipoMovimiento.equals("Entrada", true) && cant > selectedTool.ocupados()) {
                     Toast.makeText(this, "No hay esa cantidad ocupada para devolver", Toast.LENGTH_SHORT).show()
+                    return@styledButton
+                }
+
+                if (!esEntrada && esVehiculoSubmodulo && implementosSeleccionados.isNotEmpty()) {
+                    val borrador = fotosVehiculoBorrador ?: return@styledButton
+                    if (borrador.procesando) return@styledButton
+                    if (!isNetworkAvailable()) {
+                        Toast.makeText(
+                            this,
+                            "Se requiere conexión para registrar vehículo e implementos sin resultados parciales",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                        return@styledButton
+                    }
+                    val vehiculoConfirmado = selectedTool.copy()
+                    val implementosConfirmados = implementosSeleccionados.map { it.copy() }
+                    val elementosConfirmados = listOf(vehiculoConfirmado) + implementosConfirmados
+                    val fotosConfirmadas = borrador.congelarFotos(elementosConfirmados)
+                    if (fotosConfirmadas == null || fotosConfirmadas.size != elementosConfirmados.size) {
+                        Toast.makeText(this, "Toma una foto del vehículo y de cada implemento", Toast.LENGTH_LONG).show()
+                        refrescarFotosAgrupadas()
+                        return@styledButton
+                    }
+                    val confirmada = AsignacionVehiculoConfirmada(
+                        vehiculo = vehiculoConfirmado,
+                        implementos = implementosConfirmados,
+                        cantidadVehiculo = cant,
+                        solicitante = solicitante.text.toString().trim(),
+                        labor = tipoLabor.text.toString().trim(),
+                        zona = zona.text.toString().trim(),
+                        observaciones = observaciones.text.toString().trim(),
+                        fotos = fotosConfirmadas,
+                        fecha = now(),
+                    )
+                    borrador.procesando = true
+                    val backAnterior = currentScreenBackAction
+                    val superficiePantalla = ((root.parent as? View)?.parent as? View) ?: root
+                    val bloqueo = BloqueoFormulario.aplicar(superficiePantalla)
+                    currentScreenBackAction = {
+                        Toast.makeText(this, "La asignación se está registrando", Toast.LENGTH_SHORT).show()
+                    }
+                    estadoRegistroLabel?.apply {
+                        isEnabled = true
+                        text = "Registrando asignación..."
+                        setTextColor(ArlesPalette.warning)
+                    }
+
+                    fun desbloquearTrasFallo(mensaje: String) {
+                        if (!borrador.esVigente(currentScreenId)) return
+                        borrador.procesando = false
+                        bloqueo.restaurar()
+                        currentScreenBackAction = backAnterior
+                        estadoRegistroLabel?.apply {
+                            isEnabled = true
+                            text = mensaje
+                            setTextColor(ArlesPalette.danger)
+                        }
+                        refrescarFotosAgrupadas()
+                        Toast.makeText(this, mensaje, Toast.LENGTH_LONG).show()
+                    }
+
+                    subirFotosAsignacionVehiculo(
+                        confirmada = confirmada,
+                        borrador = borrador,
+                        onSuccess = { urls ->
+                            registrarAsignacionVehiculoImplementos(
+                                confirmada = confirmada,
+                                urls = urls,
+                                onSuccess = { resultados ->
+                                    val pantallaVigente = borrador.esVigente(currentScreenId)
+                                    aplicarAsignacionVehiculoLocal(confirmada, resultados)
+                                    borrador.procesando = false
+                                    borrador.activo = false
+                                    borrador.capturaToken++
+                                    borrador.fotos.clear()
+                                    onEvidenciaCapturada = null
+                                    if (pantallaVigente) showTallerSubmoduloMenu(subModulo)
+                                },
+                                onFailure = { error ->
+                                    desbloquearTrasFallo(
+                                        error.localizedMessage ?: "No se pudo registrar la asignación completa",
+                                    )
+                                },
+                            )
+                        },
+                        onFailure = { mensaje -> desbloquearTrasFallo(mensaje) },
+                    )
                     return@styledButton
                 }
 
@@ -3033,56 +3224,6 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
                     }
                     uriLocalEvidencia.isNotBlank() -> registrarConEvidencia(uriLocalEvidencia)
                     else -> registrarConEvidencia("")
-                }
-
-                // --- Lógica de asignación automática de implementos a vehículos ---
-                if (!esEntrada && esVehiculoSubmodulo && implementosSeleccionados.isNotEmpty()) {
-                    val vehiculoNombre = "${selectedTool.nombre} ${selectedTool.codigo.ifBlank { "" }}".trim()
-                    val datosComunes = mapOf(
-                        "solicitante" to solicitante.text.toString(),
-                        "labor" to tipoLabor.text.toString(),
-                        "zona" to zona.text.toString(),
-                        "observaciones" to (observaciones.text.toString() + " (asignado a vehículo $vehiculoNombre)").trim(),
-                        "fotoUrl" to (if (urlEvidencia.isNotBlank()) urlEvidencia else uriLocalEvidencia)
-                    )
-
-                    for (impl in implementosSeleccionados) {
-                        try {
-                            // Registrar salida automática para el implemento con los mismos datos del vehículo
-                            registrarMovimientoHerramienta(
-                                tipo = "Salida",
-                                herramienta = impl,
-                                solicitante = datosComunes["solicitante"] ?: "",
-                                labor = datosComunes["labor"] ?: "",
-                                zona = datosComunes["zona"] ?: "",
-                                observaciones = datosComunes["observaciones"] ?: "",
-                                cantidad = "1",
-                                fotoUrl = datosComunes["fotoUrl"] ?: "",
-                                vehiculoAsignado = vehiculoNombre,
-                                auto = true
-                            )
-                            // Actualizar localmente el estado del implemento como asignado (por si el sync tarda)
-                            db.actualizarAsignacionVehiculo(impl.id, vehiculoNombre)
-                            db.actualizarOcupacionHerramienta(impl.id, impl.ocupados() + 1.0, datosComunes["solicitante"] ?: "")
-
-                            // Push a la nube para visibilidad inmediata de otros usuarios
-                            if (isNetworkAvailable()) {
-                                try {
-                                    firestore.collection("herramientas")
-                                        .document(claveHerramientaCloud(impl))
-                                        .update(
-                                            mapOf(
-                                                "vehiculo_asignado" to vehiculoNombre,
-                                                "ultima_actualizacion" to now()
-                                            )
-                                        )
-                                } catch (_: Exception) {}
-                            }
-                        } catch (e: Exception) {
-                            android.util.Log.e("ArlesGestión", "Error auto-salida implemento ${impl.nombre}", e)
-                        }
-                    }
-                    Toast.makeText(this, "${implementosSeleccionados.size} implemento(s) asignado(s) automáticamente al vehículo", Toast.LENGTH_LONG).show()
                 }
 
                 // --- Entrada automática de implementos al devolver el vehículo ---
@@ -3131,6 +3272,9 @@ internal fun MainActivity.renderMovimientoHerramientaForm(
                         Toast.makeText(this, "${implementsAsignados.size} implemento(s) devueltos automáticamente con el vehículo", Toast.LENGTH_LONG).show()
                     }
                 }
+                }.also { boton ->
+                    confirmarMovimientoButton = boton
+                    refrescarFotosAgrupadas()
                 })
             }
         } catch (e: Exception) {
