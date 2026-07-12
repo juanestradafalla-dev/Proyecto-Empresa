@@ -32,6 +32,7 @@ object TallerCanonicos {
     const val SUBMODULO_BODEGA_ROJA = "BODEGA ROJA"
     const val TIPO_MOV_TRASLADO = "Traslado"
     const val TIPO_MOV_INGRESO_BODEGA = "Ingreso bodega"
+    const val TIPO_MOV_SALIDA_DEFINITIVA = "Salida definitiva"
 
     val SUBMODULOS = listOf(
         SUBMODULO_HERRAMIENTAS_TALLER,
