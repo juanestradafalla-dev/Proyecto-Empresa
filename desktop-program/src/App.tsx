@@ -12,6 +12,7 @@ import {
   Inbox,
   LogOut,
   PackageCheck,
+  Pencil,
   Search,
   ShieldCheck,
   PanelLeftClose,
@@ -50,12 +51,14 @@ import {
   fechaExportacionReporte,
   nombreArchivoReporte,
 } from './reporteMovimientosExcel';
-import { brand, moduleAccent, moduleDescription, modules } from './theme';
+import { brand, inventoryValuationModule, moduleAccent, moduleDescription, modules } from './theme';
 
 const logoSrc = './logo-arles.jpeg';
 const brandName = brand.name;
+const operationalModules = modules.filter((entry) => entry !== inventoryValuationModule);
 
 const moduleIcons: Record<string, string> = {
+  [inventoryValuationModule]: './module-icons/valoracion.svg',
   EPP: './module-icons/epp.svg',
   Dotación: './module-icons/dotacion.svg',
   Consumibles: './module-icons/consumibles.svg',
@@ -148,6 +151,7 @@ type Totals = Record<string, { entradas: number; salidas: number }>;
 type StatusOrder = 'default' | 'good-first' | 'maintenance-first';
 
 type ValuationSaveState = 'saving' | 'saved' | 'error';
+type ValuationFilter = 'all' | 'valued' | 'unvalued';
 
 type PanelCache = {
   version: 1;
@@ -279,6 +283,10 @@ function moduleMatches(value: string, module: string) {
   if (b === 'lubricantestaller') return a === 'lubricantestaller' || (a.includes('lubricante') && a.includes('taller'));
   if (b === 'aseo') return a === 'aseo';
   return a === b || a.includes(b);
+}
+
+function valuationModuleForItem(item: InventoryItem) {
+  return operationalModules.find((moduleName) => moduleMatches(item.modulo, moduleName)) ?? item.modulo;
 }
 
 function isChemicalModule(moduleName: string) {
@@ -967,7 +975,7 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
 
 function AppShell({ user }: { user: User }) {
   const [cachedPanelData] = useState(loadPanelCache);
-  const [module, setModule] = useState('Consumibles');
+  const [module, setModule] = useState<string>(inventoryValuationModule);
   const [search, setSearch] = useState('');
   const [inventory, setInventory] = useState<InventoryItem[]>(() => cachedPanelData?.inventory ?? []);
   const [aseoInventory, setAseoInventory] = useState<InventoryItem[]>(() => cachedPanelData?.aseoInventory ?? []);
@@ -977,6 +985,9 @@ function AppShell({ user }: { user: User }) {
   const [valuations, setValuations] = useState<Record<string, number>>({});
   const [valuationDrafts, setValuationDrafts] = useState<Record<string, string>>({});
   const [valuationSaveStates, setValuationSaveStates] = useState<Record<string, ValuationSaveState>>({});
+  const [valuationModuleFilter, setValuationModuleFilter] = useState('all');
+  const [valuationValueFilter, setValuationValueFilter] = useState<ValuationFilter>('all');
+  const [valuationEditItem, setValuationEditItem] = useState<InventoryItem | null>(null);
   const [evidenceMovement, setEvidenceMovement] = useState<Movement | null>(null);
   const [showOccupiedModal, setShowOccupiedModal] = useState(false);
   const [showEntriesModal, setShowEntriesModal] = useState(false);
@@ -1140,6 +1151,9 @@ function AppShell({ user }: { user: User }) {
     setManualStatuses({});
     setSearch('');
     setStatusOrder('default');
+    setValuationModuleFilter('all');
+    setValuationValueFilter('all');
+    setValuationEditItem(null);
     setEvidenceMovement(null);
     setShowOccupiedModal(false);
     setShowEntriesModal(false);
@@ -1204,24 +1218,24 @@ function AppShell({ user }: { user: User }) {
     });
   }
 
-  async function saveUnitValuation(item: InventoryItem) {
+  async function saveUnitValuation(item: InventoryItem): Promise<boolean> {
     const rawValue = valuationDrafts[item.valuationId];
-    if (rawValue === undefined) return;
+    if (rawValue === undefined) return false;
     if (!rawValue.trim()) {
       resetValuationDraft(item);
-      return;
+      return false;
     }
 
     const unitValue = Number(rawValue.replace(',', '.'));
     if (!Number.isFinite(unitValue) || unitValue < 0) {
       setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'error' }));
       setError('El valor unitario debe ser un número igual o mayor que cero.');
-      return;
+      return false;
     }
 
     if (unitValue === (valuations[item.valuationId] ?? 0)) {
       resetValuationDraft(item);
-      return;
+      return true;
     }
 
     setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'saving' }));
@@ -1238,11 +1252,30 @@ function AppShell({ user }: { user: User }) {
       resetValuationDraft(item);
       setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'saved' }));
       setError('');
+      return true;
     } catch (error) {
       console.error('No pude guardar la valoración unitaria:', error);
       setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'error' }));
       setError('No se pudo guardar el valor unitario. Verifica la conexión y los permisos de Firebase.');
+      return false;
     }
+  }
+
+  function openValuationModal(item: InventoryItem) {
+    updateValuationDraft(item, String(valuations[item.valuationId] ?? 0));
+    setValuationEditItem(item);
+  }
+
+  function closeValuationModal() {
+    if (!valuationEditItem || valuationSaveStates[valuationEditItem.valuationId] === 'saving') return;
+    resetValuationDraft(valuationEditItem);
+    setValuationEditItem(null);
+  }
+
+  async function saveValuationModal() {
+    if (!valuationEditItem) return;
+    const saved = await saveUnitValuation(valuationEditItem);
+    if (saved) setValuationEditItem(null);
   }
 
   function renderValuationCells(item: InventoryItem) {
@@ -1290,6 +1323,7 @@ function AppShell({ user }: { user: User }) {
     );
   }
 
+  const isValuationModule = module === inventoryValuationModule;
   const isTallerModule = module === 'TALLER';
   const isAgroquimicosModule = module === 'Agroquimicos';
   const isLubricantesTallerModule = moduleMatches(module, 'Lubricantes taller');
@@ -1301,6 +1335,79 @@ function AppShell({ user }: { user: User }) {
     () => visibleToolInventory(tools, usingCachedData && tools.length === 0 && !online),
     [online, tools, usingCachedData],
   );
+  const valuationInventory = useMemo(() => {
+    const operationalInventory = inventory.filter((item) => (
+      !moduleMatches(item.modulo, 'ASEO') && !moduleMatches(item.modulo, 'TALLER')
+    ));
+    return [...operationalInventory, ...aseoInventory, ...toolsInventory]
+      .filter((item) => !(valuationModuleForItem(item) === 'TALLER' && retiredToolCodes.has(normalizeToolCode(item.codigo))))
+      .sort((a, b) => (
+        valuationModuleForItem(a).localeCompare(valuationModuleForItem(b))
+        || compareCodes(a.codigo, b.codigo)
+        || a.descripcion.localeCompare(b.descripcion)
+      ));
+  }, [aseoInventory, inventory, toolsInventory]);
+  const valuationModuleOptions = useMemo(() => {
+    const knownModules = new Set<string>(operationalModules);
+    const additionalModules = valuationInventory
+      .map(valuationModuleForItem)
+      .filter((moduleName) => !knownModules.has(moduleName));
+    return [...operationalModules, ...Array.from(new Set(additionalModules)).sort((a, b) => a.localeCompare(b))];
+  }, [valuationInventory]);
+  const filteredValuationInventory = useMemo(() => {
+    const query = normalize(search);
+    return valuationInventory.filter((item) => {
+      const moduleName = valuationModuleForItem(item);
+      const unitValue = valuations[item.valuationId] ?? 0;
+      const hasValue = unitValue > 0;
+      const matchesModule = valuationModuleFilter === 'all' || moduleName === valuationModuleFilter;
+      const matchesValue = valuationValueFilter === 'all'
+        || (valuationValueFilter === 'valued' ? hasValue : !hasValue);
+      const matchesSearch = !query || normalize([
+        moduleName,
+        item.codigo,
+        item.codigoQr ?? '',
+        item.descripcion,
+        item.referencia,
+        item.categoria,
+        item.subcategoria ?? '',
+        item.unidad,
+      ].join(' ')).includes(query);
+      return matchesModule && matchesValue && matchesSearch;
+    });
+  }, [search, valuationInventory, valuationModuleFilter, valuationValueFilter, valuations]);
+  const {
+    valuedProductCount,
+    unvaluedProductCount,
+    inventoryGrandTotal,
+    valuationModuleTotals,
+  } = useMemo(() => {
+    let valuedCount = 0;
+    let grandTotal = 0;
+    const totalsByModule = new Map<string, { moduleName: string; productCount: number; valuedCount: number; total: number }>(
+      valuationModuleOptions.map((moduleName) => [moduleName, { moduleName, productCount: 0, valuedCount: 0, total: 0 }]),
+    );
+
+    valuationInventory.forEach((item) => {
+      const unitValue = valuations[item.valuationId] ?? 0;
+      const itemTotal = unitValue * valuationQuantity(item);
+      const moduleTotal = totalsByModule.get(valuationModuleForItem(item));
+      grandTotal += itemTotal;
+      if (unitValue > 0) valuedCount += 1;
+      if (moduleTotal) {
+        moduleTotal.productCount += 1;
+        moduleTotal.total += itemTotal;
+        if (unitValue > 0) moduleTotal.valuedCount += 1;
+      }
+    });
+
+    return {
+      valuedProductCount: valuedCount,
+      unvaluedProductCount: valuationInventory.length - valuedCount,
+      inventoryGrandTotal: grandTotal,
+      valuationModuleTotals: valuationModuleOptions.map((moduleName) => totalsByModule.get(moduleName)!),
+    };
+  }, [valuationInventory, valuationModuleOptions, valuations]);
   const usingTallerFallback = isTallerModule && tools.length === 0 && toolsInventory.length > 0;
   const moduleInventoryBase = useMemo(() => {
     const operationalInventory = inventory.filter((item) => !moduleMatches(item.modulo, 'ASEO'));
@@ -1522,45 +1629,71 @@ function AppShell({ user }: { user: User }) {
         <header className="topbar">
           <div className="module-heading">
             <div>
-              <p className="eyebrow">Consulta operativa</p>
-              <h2 className="topbar-title">Inventario y movimientos</h2>
+              <p className="eyebrow">{isValuationModule ? 'Resumen general' : 'Consulta operativa'}</p>
+              <h2 className="topbar-title">{isValuationModule ? inventoryValuationModule : 'Inventario y movimientos'}</h2>
             </div>
           </div>
-          <div className="toolbar">
-            <label className="search-box">
-              <Search size={18} />
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar código, descripción, unidad o categoría" />
-            </label>
-            {isTallerModule && (
-              <label className="status-sort">
-                <span>Ordenar:</span>
-                <select value={statusOrder} onChange={(event) => setStatusOrder(event.target.value as StatusOrder)}>
-                  <option value="default">Sin orden</option>
-                  <option value="good-first">Buen estado primero</option>
-                  <option value="maintenance-first">Mantenimiento primero</option>
-                </select>
-              </label>
+          <div className={`toolbar ${isValuationModule ? 'valuation-toolbar' : ''}`}>
+            {isValuationModule ? (
+              <>
+                <label className="search-box">
+                  <Search size={18} />
+                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar módulo, código o producto" />
+                </label>
+                <label className="status-sort valuation-filter">
+                  <span>Módulo:</span>
+                  <select value={valuationModuleFilter} onChange={(event) => setValuationModuleFilter(event.target.value)}>
+                    <option value="all">Todos</option>
+                    {valuationModuleOptions.map((moduleName) => <option key={moduleName} value={moduleName}>{moduleName}</option>)}
+                  </select>
+                </label>
+                <label className="status-sort valuation-filter">
+                  <span>Valor:</span>
+                  <select value={valuationValueFilter} onChange={(event) => setValuationValueFilter(event.target.value as ValuationFilter)}>
+                    <option value="all">Todos</option>
+                    <option value="valued">Con valor</option>
+                    <option value="unvalued">Sin valor</option>
+                  </select>
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="search-box">
+                  <Search size={18} />
+                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar código, descripción, unidad o categoría" />
+                </label>
+                {isTallerModule && (
+                  <label className="status-sort">
+                    <span>Ordenar:</span>
+                    <select value={statusOrder} onChange={(event) => setStatusOrder(event.target.value as StatusOrder)}>
+                      <option value="default">Sin orden</option>
+                      <option value="good-first">Buen estado primero</option>
+                      <option value="maintenance-first">Mantenimiento primero</option>
+                    </select>
+                  </label>
+                )}
+                <button className="tool-button" type="button" onClick={() => setShowEntriesModal(true)}>
+                  <ArrowDownLeft size={17} />
+                  {tallerMovementLabels?.entradas ?? 'Entradas'} ({formatNumber(allEntries.length)})
+                </button>
+                {isTallerModule && (
+                  <button className="tool-button" type="button" onClick={() => setShowOccupiedModal(true)}>
+                    <AlertTriangle size={17} />
+                    En uso ({formatNumber(occupiedUnitCards.length)})
+                  </button>
+                )}
+                <button
+                  className="tool-button"
+                  type="button"
+                  disabled={!isDesktopApp || exportando || moduleMovements.length === 0}
+                  onClick={() => { void exportarReporte(); }}
+                  title={isDesktopApp ? `Exportar movimientos del módulo ${module} (${nombreArchivoReporte(module)})` : 'Disponible solo en el ejecutable de escritorio'}
+                >
+                  <FileSpreadsheet size={17} />
+                  {exportando ? 'Exportando...' : 'Exportar'}
+                </button>
+              </>
             )}
-            <button className="tool-button" type="button" onClick={() => setShowEntriesModal(true)}>
-              <ArrowDownLeft size={17} />
-              {tallerMovementLabels?.entradas ?? 'Entradas'} ({formatNumber(allEntries.length)})
-            </button>
-            {isTallerModule && (
-              <button className="tool-button" type="button" onClick={() => setShowOccupiedModal(true)}>
-                <AlertTriangle size={17} />
-                En uso ({formatNumber(occupiedUnitCards.length)})
-              </button>
-            )}
-            <button
-              className="tool-button"
-              type="button"
-              disabled={!isDesktopApp || exportando || moduleMovements.length === 0}
-              onClick={() => { void exportarReporte(); }}
-              title={isDesktopApp ? `Exportar movimientos del módulo ${module} (${nombreArchivoReporte(module)})` : 'Disponible solo en el ejecutable de escritorio'}
-            >
-              <FileSpreadsheet size={17} />
-              {exportando ? 'Exportando...' : 'Exportar'}
-            </button>
           </div>
         </header>
 
@@ -1590,6 +1723,145 @@ function AppShell({ user }: { user: User }) {
             <PackageCheck size={18} />
             {tallerMovementLabels.flujo}
           </div>
+        )}
+
+        {isValuationModule && (
+          <section className="valuation-dashboard" aria-label="Resumen de valoración del inventario">
+            <section className="valuation-summary-grid">
+              <article className="valuation-summary-card total">
+                <CircleDollarSign size={24} />
+                <div>
+                  <span>Valor total de todo el inventario</span>
+                  <strong>{formatCurrency(inventoryGrandTotal)}</strong>
+                  <small>{formatNumber(valuationInventory.length)} productos registrados</small>
+                </div>
+              </article>
+              <article className="valuation-summary-card valued">
+                <PackageCheck size={24} />
+                <div>
+                  <span>Productos con valor</span>
+                  <strong>{formatNumber(valuedProductCount)}</strong>
+                  <small>Valor unitario mayor que cero</small>
+                </div>
+              </article>
+              <article className="valuation-summary-card unvalued">
+                <AlertTriangle size={24} />
+                <div>
+                  <span>Productos sin valor</span>
+                  <strong>{formatNumber(unvaluedProductCount)}</strong>
+                  <small>Pendientes de valoración</small>
+                </div>
+              </article>
+            </section>
+
+            <section className="valuation-module-section" aria-labelledby="valuation-module-totals-title">
+              <div className="valuation-section-heading">
+                <div>
+                  <p className="eyebrow">Totales separados por módulo</p>
+                  <h2 id="valuation-module-totals-title">Distribución del valor actual</h2>
+                </div>
+                {valuationModuleFilter !== 'all' && (
+                  <button type="button" onClick={() => setValuationModuleFilter('all')}>
+                    <X size={14} /> Ver todos
+                  </button>
+                )}
+              </div>
+              <div className="valuation-module-grid">
+                {valuationModuleTotals.map((summary) => (
+                  <button
+                    type="button"
+                    key={summary.moduleName}
+                    className={valuationModuleFilter === summary.moduleName ? 'active' : ''}
+                    onClick={() => setValuationModuleFilter(summary.moduleName)}
+                    style={{ '--card-accent': moduleAccent(summary.moduleName) } as CSSProperties}
+                  >
+                    <span>{summary.moduleName}</span>
+                    <strong>{formatCurrency(summary.total)}</strong>
+                    <small>{summary.valuedCount} con valor de {summary.productCount}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <article className="panel valuation-general-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Inventario consolidado</p>
+                  <h2>Tabla general</h2>
+                  <small>{formatNumber(filteredValuationInventory.length)} productos visibles</small>
+                </div>
+                <CircleDollarSign size={20} />
+              </div>
+              <div className="table-wrap valuation-table-wrap">
+                <table className="inventory-table valuation-general-table">
+                  <thead>
+                    <tr>
+                      <th>Módulo</th>
+                      <th className="col-code">Código</th>
+                      <th className="col-desc">Producto</th>
+                      <th className="numeric">Cantidad</th>
+                      <th className="col-unit">Unidad</th>
+                      <th className="numeric col-valuation-unit">Valor unitario</th>
+                      <th className="numeric col-valuation-total">Valor total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredValuationInventory.map((item) => {
+                      const moduleName = valuationModuleForItem(item);
+                      const unitValue = valuations[item.valuationId] ?? 0;
+                      const quantity = valuationQuantity(item);
+                      return (
+                        <tr key={item.valuationId}>
+                          <td><span className="valuation-module-badge" style={{ '--badge-accent': moduleAccent(moduleName) } as CSSProperties}>{moduleName}</span></td>
+                          <td className="code col-code">{item.codigoQr || item.codigo}</td>
+                          <td className="col-desc">{item.descripcion}</td>
+                          <td className="numeric valuation-quantity">
+                            <strong>{formatNumber(quantity)}</strong>
+                            {moduleName === 'TALLER' && <small>Incluye ocupados</small>}
+                          </td>
+                          <td className="col-unit">{item.unidad}</td>
+                          <td className="numeric valuation-unit-cell">
+                            <button
+                              type="button"
+                              className={`valuation-edit-button ${unitValue > 0 ? 'valued' : 'unvalued'}`}
+                              onClick={() => openValuationModal(item)}
+                              disabled={!online}
+                              title={online ? `Editar valor unitario de ${item.descripcion}` : 'Conéctate para editar el valor unitario'}
+                            >
+                              <span>{formatCurrency(unitValue)}</span>
+                              <Pencil size={14} />
+                            </button>
+                          </td>
+                          <td className="numeric valuation-total">{formatCurrency(unitValue * quantity)}</td>
+                        </tr>
+                      );
+                    })}
+                    {!loading && filteredValuationInventory.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="empty-cell">
+                          <div className="empty-state">
+                            <Search size={28} />
+                            <strong>Sin productos para estos filtros</strong>
+                            <span>Ajusta el módulo, el estado de valoración o el buscador.</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {loading && (
+                      <tr>
+                        <td colSpan={7} className="empty-cell">
+                          <div className="loading-state">
+                            <span className="loading-dot" />
+                            <span>Cargando valoración desde Firestore...</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </section>
         )}
 
         {combustibleFuelStock && (
@@ -1640,6 +1912,7 @@ function AppShell({ user }: { user: User }) {
           </div>
         )}
 
+        {!isValuationModule && (
         <section className="kpi-grid">
           <article>
             <PackageCheck size={20} />
@@ -1675,7 +1948,9 @@ function AppShell({ user }: { user: User }) {
             <strong>{formatCurrency(totalValuation)}</strong>
           </article>
         </section>
+        )}
 
+        {!isValuationModule && (
         <section className="dashboard-grid" key={`dashboard-${module}-${tallerSubmodulo || agroquimicosUbicacion || 'todos'}`}>
           <article className="panel inventory-panel">
             <div className="panel-header">
@@ -1905,6 +2180,7 @@ function AppShell({ user }: { user: User }) {
             )}
           />
         </section>
+        )}
       </section>
       {evidenceMovement && (
         <EvidenceModal
@@ -1934,8 +2210,107 @@ function AppShell({ user }: { user: User }) {
           onClose={() => setShowOccupiedModal(false)}
         />
       )}
+      {valuationEditItem && (
+        <ValuationEditModal
+          item={valuationEditItem}
+          moduleName={valuationModuleForItem(valuationEditItem)}
+          quantity={valuationQuantity(valuationEditItem)}
+          value={valuationDrafts[valuationEditItem.valuationId] ?? String(valuations[valuationEditItem.valuationId] ?? 0)}
+          saveState={valuationSaveStates[valuationEditItem.valuationId]}
+          online={online}
+          onChange={(value) => updateValuationDraft(valuationEditItem, value)}
+          onSave={() => { void saveValuationModal(); }}
+          onClose={closeValuationModal}
+        />
+      )}
       {/* Assign QR modal removed: items without code only show availability status */}
     </main>
+  );
+}
+
+function ValuationEditModal({
+  item,
+  moduleName,
+  quantity,
+  value,
+  saveState,
+  online,
+  onChange,
+  onSave,
+  onClose,
+}: {
+  item: InventoryItem;
+  moduleName: string;
+  quantity: number;
+  value: string;
+  saveState?: ValuationSaveState;
+  online: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const parsedValue = Number(value.replace(',', '.'));
+  const previewUnitValue = Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : 0;
+  const saving = saveState === 'saving';
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <section
+        className="entries-modal valuation-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Editar valor unitario de ${item.descripcion}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="evidence-header">
+          <div>
+            <p className="eyebrow">{moduleName} | Valoración unitaria</p>
+            <h2>{item.descripcion}</h2>
+            <small>{item.codigoQr || item.codigo} | {formatNumber(quantity)} {item.unidad}</small>
+          </div>
+          <button className="icon-button" type="button" title="Cerrar" disabled={saving} onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+        <form
+          className="valuation-modal-body"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSave();
+          }}
+        >
+          <div className="valuation-modal-preview">
+            <span>Valor total calculado</span>
+            <strong>{formatCurrency(previewUnitValue * quantity)}</strong>
+            {moduleName === 'TALLER' && <small>La cantidad incluye unidades disponibles y ocupadas.</small>}
+          </div>
+          <label className="valuation-modal-field">
+            Valor unitario
+            <span>
+              <strong>$</strong>
+              <input
+                autoFocus
+                type="number"
+                min="0"
+                step="1"
+                inputMode="decimal"
+                value={value}
+                disabled={!online || saving}
+                onChange={(event) => onChange(event.target.value)}
+              />
+            </span>
+          </label>
+          {saveState === 'error' && <p className="form-error">Revisa el valor unitario e intenta nuevamente.</p>}
+          {!online && <p className="form-error">Conéctate a Firestore para guardar cambios.</p>}
+          <footer className="valuation-modal-actions">
+            <button type="button" disabled={saving} onClick={onClose}>Cancelar</button>
+            <button className="tool-button" type="submit" disabled={!online || saving || !value.trim()}>
+              {saving ? 'Guardando...' : 'Guardar valor'}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
   );
 }
 
