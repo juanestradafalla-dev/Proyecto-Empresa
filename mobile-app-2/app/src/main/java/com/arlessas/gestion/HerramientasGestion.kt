@@ -1540,6 +1540,12 @@ internal fun MainActivity.showHerramientasMenu() {
         val enPrestamo = herramientas.count { it.ocupados() > 0.0 || it.estado.equals("En uso", ignoreCase = true) }
         val disponibles = herramientas.sumOf { it.disponibles() }
         val conteoSubmodulos = conteoHerramientasPorSubmodulo()
+        val conteoLubricantesCatalogo = catalogoCargado[ModulosInventario.LUBRICANTES_TALLER]
+            ?.values
+            ?.sumOf { subcategorias -> subcategorias.values.sumOf { productos -> productos.size } }
+            ?: 0
+        val conteoLubricantes = conteoLubricantesCatalogo.takeIf { it > 0 }
+            ?: QuimicosCanonicos.items.count { it.modulo == ModulosInventario.LUBRICANTES_TALLER }
 
         root.addView(
             moduleHeroBanner(
@@ -1599,6 +1605,31 @@ internal fun MainActivity.showHerramientasMenu() {
             }
             grid.addView(row)
         }
+        if (AppMode.esTallerIndependiente) {
+            val rowLubricantes = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                weightSum = 2f
+            }
+            rowLubricantes.addView(
+                tallerSubmoduloTile(
+                    title = "Lubricantes taller",
+                    subtitle = "Aceites, grasas y fluidos",
+                    itemCount = conteoLubricantes,
+                    iconRes = R.drawable.ic_lubricants,
+                    accent = ArlesPalette.accentLubricantes,
+                ) { showLubricantesTallerForm() },
+                LinearLayout.LayoutParams(0, dp(118), 1f).apply {
+                    setMargins(0, 0, dp(5), dp(8))
+                },
+            )
+            rowLubricantes.addView(
+                View(this),
+                LinearLayout.LayoutParams(0, dp(118), 1f).apply {
+                    setMargins(dp(5), 0, 0, dp(8))
+                },
+            )
+            grid.addView(rowLubricantes)
+        }
         root.addView(grid)
 
         root.addView(sectionHeader("Consultas y sincronización"))
@@ -1619,14 +1650,6 @@ internal fun MainActivity.showHerramientasMenu() {
             ) { showHistorialMovimientosHerramientas() },
         )
         if (AppMode.esTallerIndependiente) {
-            root.addView(
-                actionCard(
-                    "Lubricantes taller",
-                    "Salida y traslado de aceites, grasas y fluidos del taller",
-                    R.drawable.ic_lubricants,
-                    ArlesPalette.accentLubricantes,
-                ) { showLubricantesTallerForm() },
-            )
             root.addView(
                 actionCard(
                     "Movimientos de taller y lubricantes",
