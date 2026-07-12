@@ -10,7 +10,7 @@ import java.util.Locale
 import org.json.JSONObject
 
 const val DATABASE_NAME = "gestion.db"
-const val DATABASE_VERSION = 11
+const val DATABASE_VERSION = 12
 
 data class Movimiento(
     val id: Long = 0,
@@ -32,6 +32,8 @@ data class Movimiento(
     val asignadoA: String = "",
     val responsableEntrega: String = "",
     val devueltoPor: String = "",
+    val asignacionId: String = "",
+    val fechaLimiteDevolucionEpochMs: Long = 0L,
 )
 
 data class Herramienta(
@@ -56,6 +58,8 @@ data class Herramienta(
     val requiereAsignarQr: Boolean = false,
     val vehiculoAsignado: String = "",  // Para implementos: nombre/código del vehículo al que está asignado actualmente
     val esConsumible: Boolean = false,
+    val asignacionActivaId: String = "",
+    val fechaLimiteDevolucionEpochMs: Long = 0L,
 ) {
     fun disponibles(): Double = (cantidadTotal - cantidadOcupada).coerceAtLeast(0.0)
     fun ocupados(): Double = cantidadOcupada.coerceAtLeast(0.0)
@@ -166,7 +170,9 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                 codigoQr TEXT,
                 requiereAsignarQr INTEGER DEFAULT 0,
                 vehiculoAsignado TEXT DEFAULT '',
-                esConsumible INTEGER DEFAULT 0
+                esConsumible INTEGER DEFAULT 0,
+                asignacionActivaId TEXT DEFAULT '',
+                fechaLimiteDevolucionEpochMs INTEGER DEFAULT 0
             )
             """.trimIndent()
         )
@@ -371,6 +377,10 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         if (oldVersion < 11) {
             agregarColumnaSiFalta(db, "herramientas", "esConsumible INTEGER DEFAULT 0")
         }
+        if (oldVersion < 12) {
+            agregarColumnaSiFalta(db, "herramientas", "asignacionActivaId TEXT DEFAULT ''")
+            agregarColumnaSiFalta(db, "herramientas", "fechaLimiteDevolucionEpochMs INTEGER DEFAULT 0")
+        }
     }
 
     private fun agregarColumnaSiFalta(db: SQLiteDatabase, tabla: String, definicion: String) {
@@ -424,6 +434,8 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             put("requiereAsignarQr", if (herramienta.requiereAsignarQr) 1 else 0)
             put("vehiculoAsignado", herramienta.vehiculoAsignado)
             put("esConsumible", if (herramienta.esConsumible) 1 else 0)
+            put("asignacionActivaId", herramienta.asignacionActivaId)
+            put("fechaLimiteDevolucionEpochMs", herramienta.fechaLimiteDevolucionEpochMs)
         }
         return writableDatabase.insert("herramientas", null, values)
     }
@@ -465,6 +477,35 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         return writableDatabase.update("herramientas", values, "id = ?", arrayOf(id.toString()))
     }
 
+    fun activarAlertaPrestamo(id: Long, asignacionId: String, fechaLimiteEpochMs: Long): Int {
+        val values = ContentValues().apply {
+            put("asignacionActivaId", asignacionId)
+            put("fechaLimiteDevolucionEpochMs", fechaLimiteEpochMs)
+        }
+        return writableDatabase.update("herramientas", values, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun actualizarPlazoPrestamo(asignacionId: String, fechaLimiteEpochMs: Long): Int {
+        if (asignacionId.isBlank()) return 0
+        val values = ContentValues().apply {
+            put("fechaLimiteDevolucionEpochMs", fechaLimiteEpochMs)
+        }
+        return writableDatabase.update(
+            "herramientas",
+            values,
+            "asignacionActivaId = ?",
+            arrayOf(asignacionId),
+        )
+    }
+
+    fun limpiarAlertaPrestamo(id: Long): Int {
+        val values = ContentValues().apply {
+            put("asignacionActivaId", "")
+            put("fechaLimiteDevolucionEpochMs", 0L)
+        }
+        return writableDatabase.update("herramientas", values, "id = ?", arrayOf(id.toString()))
+    }
+
     fun actualizarCantidadTotalHerramienta(id: Long, cantidadTotal: Double, cantidadOcupada: Double): Int {
         val totalSeguro = cantidadTotal.coerceAtLeast(cantidadOcupada.coerceAtLeast(0.0))
         val disponible = (totalSeguro - cantidadOcupada).coerceAtLeast(0.0)
@@ -499,6 +540,8 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             put("requiereAsignarQr", if (herramienta.requiereAsignarQr) 1 else 0)
             put("vehiculoAsignado", herramienta.vehiculoAsignado)
             put("esConsumible", if (herramienta.esConsumible) 1 else 0)
+            put("asignacionActivaId", herramienta.asignacionActivaId)
+            put("fechaLimiteDevolucionEpochMs", herramienta.fechaLimiteDevolucionEpochMs)
         }
         return writableDatabase.update("herramientas", values, "id = ?", arrayOf(herramienta.id.toString()))
     }
@@ -569,6 +612,8 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                         requiereAsignarQr = cursorBool(it, "requiereAsignarQr"),
                         vehiculoAsignado = cursorString(it, "vehiculoAsignado"),
                         esConsumible = cursorBool(it, "esConsumible"),
+                        asignacionActivaId = cursorString(it, "asignacionActivaId"),
+                        fechaLimiteDevolucionEpochMs = cursorLong(it, "fechaLimiteDevolucionEpochMs"),
                     )
                 )
             }
@@ -624,6 +669,9 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             responsable = existente?.responsable ?: herramienta.responsable,
             cantidadOcupada = existente?.cantidadOcupada ?: herramienta.cantidadOcupada,
             esConsumible = existente?.esConsumible ?: herramienta.esConsumible,
+            asignacionActivaId = existente?.asignacionActivaId ?: herramienta.asignacionActivaId,
+            fechaLimiteDevolucionEpochMs = existente?.fechaLimiteDevolucionEpochMs
+                ?: herramienta.fechaLimiteDevolucionEpochMs,
         )
         actualizarHerramientaCanonica(preservada)
         return existenteId
@@ -929,6 +977,8 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             requiereAsignarQr = cursorBool(it, "requiereAsignarQr"),
             vehiculoAsignado = cursorString(it, "vehiculoAsignado"),
             esConsumible = cursorBool(it, "esConsumible"),
+            asignacionActivaId = cursorString(it, "asignacionActivaId"),
+            fechaLimiteDevolucionEpochMs = cursorLong(it, "fechaLimiteDevolucionEpochMs"),
         )
     }
 
@@ -940,6 +990,11 @@ class GestionDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
     private fun cursorDouble(it: android.database.Cursor, columna: String, defecto: Double = 0.0): Double {
         val index = it.getColumnIndex(columna)
         return if (index >= 0) it.getDouble(index) else defecto
+    }
+
+    private fun cursorLong(it: android.database.Cursor, columna: String, defecto: Long = 0L): Long {
+        val index = it.getColumnIndex(columna)
+        return if (index >= 0 && !it.isNull(index)) it.getLong(index) else defecto
     }
 
     private fun cursorBool(it: android.database.Cursor, columna: String): Boolean {

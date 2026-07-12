@@ -87,6 +87,9 @@ internal fun MainActivity.showMainMenu() {
             return
         }
 
+        inicializarAlertasPrestamosTrasLogin()
+        abrirNavegacionPrestamoPendiente()
+
         if (isBackNavigationInProgress) {
             android.util.Log.d("PerfTaller", "showMainMenu sin sincronizarPerfilUsuarioNube por retroceso")
         } else {

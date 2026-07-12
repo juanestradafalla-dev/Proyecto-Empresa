@@ -95,6 +95,8 @@ class MainActivity : ComponentActivity() {
     internal var fotoUriActual: Uri? = null
     internal var tallerScanTipoMovimiento: String? = null
     internal var tallerScanSubModulo: String = ""
+    internal var prestamoAsignacionPendiente: String = ""
+    internal var prestamoAmpliacionPendiente: Boolean = false
 
 
     internal val verde = ArlesPalette.green700
@@ -168,6 +170,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    internal val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        getSharedPreferences(PRESTAMOS_ALERTAS_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREF_NOTIFICACIONES_SOLICITADAS, true)
+            .apply()
+    }
+
     internal val voiceLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             val results = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
@@ -231,7 +240,15 @@ class MainActivity : ComponentActivity() {
         if (!AppMode.esTallerIndependiente) {
             ejecutarBackupAutomaticoSiCorresponde()
         }
+        capturarNavegacionPrestamo(intent)
         showMainMenu()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        capturarNavegacionPrestamo(intent)
+        abrirNavegacionPrestamoPendiente()
     }
 
     override fun onDestroy() {
