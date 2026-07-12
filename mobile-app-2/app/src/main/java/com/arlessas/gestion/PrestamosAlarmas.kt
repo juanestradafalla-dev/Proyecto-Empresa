@@ -154,6 +154,24 @@ internal data class PrestamoAlarmaGrupo(
     val fechaLimiteEpochMs: Long,
 )
 
+internal data class DecisionNotificacionesPrestamo(
+    val activasPersistidas: Set<String>,
+    val cancelar: Set<String>,
+)
+
+internal data class ElementoAsignacionPendiente(
+    val asignacionId: String,
+    val cantidadOcupada: Double,
+    val esConsumible: Boolean,
+    val fechaLimiteEpochMs: Long,
+)
+
+internal data class DecisionAlarmaTrasDevolucion(
+    val mantenerAlarma: Boolean,
+    val cantidadElementosPendientes: Int,
+    val fechaLimiteEpochMs: Long,
+)
+
 internal fun agruparPrestamosParaAlarma(
     elementos: List<PrestamoAlarmaElemento>,
     ahoraEpochMs: Long,
@@ -173,6 +191,40 @@ internal fun agruparPrestamosParaAlarma(
             )
         }
         .sortedBy { it.fechaLimiteEpochMs }
+}
+
+@Suppress("UNUSED_PARAMETER")
+internal fun gruposVencidosParaReconciliacion(
+    grupos: List<PrestamoAlarmaGrupo>,
+    ahoraEpochMs: Long,
+    asignacionObjetivo: String = "",
+): List<PrestamoAlarmaGrupo> {
+    // La asignacion objetivo describe por que desperto el Worker; la reconciliacion siempre es global.
+    return grupos.filter { it.fechaLimiteEpochMs <= ahoraEpochMs }
+}
+
+internal fun decidirNotificacionesPrestamo(
+    activasAnteriores: Set<String>,
+    asignacionesVencidas: Set<String>,
+): DecisionNotificacionesPrestamo {
+    return DecisionNotificacionesPrestamo(
+        activasPersistidas = asignacionesVencidas,
+        cancelar = activasAnteriores - asignacionesVencidas,
+    )
+}
+
+internal fun decidirAlarmaTrasDevolucion(
+    asignacionId: String,
+    elementos: List<ElementoAsignacionPendiente>,
+): DecisionAlarmaTrasDevolucion {
+    val pendientes = elementos.filter {
+        it.asignacionId == asignacionId && !it.esConsumible && it.cantidadOcupada > 0.0
+    }
+    return DecisionAlarmaTrasDevolucion(
+        mantenerAlarma = pendientes.isNotEmpty(),
+        cantidadElementosPendientes = pendientes.size,
+        fechaLimiteEpochMs = pendientes.map { it.fechaLimiteEpochMs }.filter { it > 0L }.maxOrNull() ?: 0L,
+    )
 }
 
 internal fun crearCanalPrestamos(context: Context) {
@@ -239,6 +291,30 @@ internal fun cancelarAlarmaAsignacion(context: Context, asignacionId: String) {
     }
 }
 
+internal fun MainActivity.reconciliarAlarmaTrasDevolucion(asignacionId: String) {
+    if (asignacionId.isBlank()) return
+    val elementos = db.obtenerHerramientas().map { herramienta ->
+        ElementoAsignacionPendiente(
+            asignacionId = herramienta.asignacionActivaId,
+            cantidadOcupada = herramienta.cantidadOcupada,
+            esConsumible = herramienta.esConsumible,
+            fechaLimiteEpochMs = herramienta.fechaLimiteDevolucionEpochMs,
+        )
+    }
+    val decision = decidirAlarmaTrasDevolucion(asignacionId, elementos)
+    if (decision.mantenerAlarma) {
+        android.util.Log.d(
+            "AlarmasTaller",
+            "asignacion=$asignacionId continua elementos=${decision.cantidadElementosPendientes}",
+        )
+        // No se cancela ni reemplaza el trabajo individual vigente de la asignacion.
+        programarRevisionDiariaPrestamos(this)
+    } else {
+        cancelarAlarmaAsignacion(this, asignacionId)
+        programarRevisionDiariaPrestamos(this)
+    }
+}
+
 private fun nombreTrabajoAsignacion(asignacionId: String): String =
     "prestamo_asignacion_${asignacionId.hashCode().absoluteValue}"
 
@@ -259,9 +335,9 @@ class PrestamosPendientesWorker(
             val elementos = snapshot.documents.mapNotNull { doc -> elementoAlarmaDesdeDocumento(doc) }
             val grupos = agruparPrestamosParaAlarma(elementos, ahora)
             val asignacionObjetivo = inputData.getString(INPUT_ASIGNACION).orEmpty()
-            val vencidos = grupos.filter {
-                it.fechaLimiteEpochMs <= ahora &&
-                    (asignacionObjetivo.isBlank() || it.asignacionId == asignacionObjetivo)
+            val vencidos = gruposVencidosParaReconciliacion(grupos, ahora, asignacionObjetivo)
+            if (asignacionObjetivo.isNotBlank()) {
+                android.util.Log.d("AlarmasTaller", "revision individual=$asignacionObjetivo reconciliacion_global=${vencidos.size}")
             }
             reconciliarNotificaciones(applicationContext, grupos, vencidos, ahora)
             if (esRevisionDiaria) {
@@ -318,7 +394,8 @@ private fun reconciliarNotificaciones(
     val manager = NotificationManagerCompat.from(context)
     val activasAnteriores = prefs.getStringSet(PREF_NOTIFICACIONES_ACTIVAS, emptySet()).orEmpty()
     val vencidasIds = gruposVencidos.map { it.asignacionId }.toSet()
-    activasAnteriores.filter { it !in vencidasIds }.forEach { manager.cancel(idNotificacion(it)) }
+    val decision = decidirNotificacionesPrestamo(activasAnteriores, vencidasIds)
+    decision.cancelar.forEach { manager.cancel(idNotificacion(it)) }
 
     val puedeNotificar = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -340,7 +417,7 @@ private fun reconciliarNotificaciones(
         if (gruposVencidos.size > 1) mostrarResumenNotificaciones(context, gruposVencidos)
         else manager.cancel(19_999)
     }
-    prefs.edit { putStringSet(PREF_NOTIFICACIONES_ACTIVAS, vencidasIds) }
+    prefs.edit { putStringSet(PREF_NOTIFICACIONES_ACTIVAS, decision.activasPersistidas) }
 
     if (gruposActivos.isEmpty()) {
         activasAnteriores.forEach { manager.cancel(idNotificacion(it)) }

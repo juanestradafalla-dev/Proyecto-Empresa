@@ -1293,11 +1293,10 @@ internal fun MainActivity.registrarMovimientoHerramienta(
             ).apply { putAll(metadatosHerramienta) }
 
             fun finalizar() {
-                if (prestamoContinua) {
+                if (esSalida) {
                     programarRevisionDiariaPrestamos(this)
                 } else {
-                    cancelarAlarmaAsignacion(this, asignacionMovimiento)
-                    programarRevisionDiariaPrestamos(this)
+                    reconciliarAlarmaTrasDevolucion(asignacionMovimiento)
                 }
                 if (!auto) {
                     saved("Movimiento registrado: $tipo")

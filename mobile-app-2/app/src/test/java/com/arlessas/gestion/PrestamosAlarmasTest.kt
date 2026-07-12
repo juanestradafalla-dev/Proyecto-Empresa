@@ -96,6 +96,68 @@ class PrestamosAlarmasTest {
         assertFalse(primera == claveAvisoPrestamo("ASG-1", 200L))
     }
 
+    @Test
+    fun workerIndividualDeAReconciliaraTambienB() {
+        val ahora = epoch(2026, 7, 12, 12, 31)
+        val grupos = agruparPrestamosParaAlarma(
+            listOf(elemento("A", "ASG-A", 1.0), elemento("B", "ASG-B", 1.0)),
+            ahora,
+        )
+        val vencidos = gruposVencidosParaReconciliacion(grupos, ahora, asignacionObjetivo = "ASG-A")
+        assertEquals(setOf("ASG-A", "ASG-B"), vencidos.map { it.asignacionId }.toSet())
+    }
+
+    @Test
+    fun listaPersistenteConservaLasDosAsignacionesVencidas() {
+        val decision = decidirNotificacionesPrestamo(
+            activasAnteriores = setOf("ASG-A", "ASG-B"),
+            asignacionesVencidas = setOf("ASG-A", "ASG-B"),
+        )
+        assertEquals(setOf("ASG-A", "ASG-B"), decision.activasPersistidas)
+        assertTrue(decision.cancelar.isEmpty())
+    }
+
+    @Test
+    fun devolverSoloVehiculoMantieneAlarmaDelImplemento() {
+        val decision = decidirAlarmaTrasDevolucion(
+            "VEH-1",
+            listOf(pendiente("VEH-1", 0.0), pendiente("VEH-1", 1.0)),
+        )
+        assertTrue(decision.mantenerAlarma)
+        assertEquals(1, decision.cantidadElementosPendientes)
+    }
+
+    @Test
+    fun devolverSoloImplementoMantieneAlarmaDelVehiculo() {
+        val decision = decidirAlarmaTrasDevolucion(
+            "VEH-1",
+            listOf(pendiente("VEH-1", 1.0), pendiente("VEH-1", 0.0)),
+        )
+        assertTrue(decision.mantenerAlarma)
+    }
+
+    @Test
+    fun devolverUltimoElementoCancelaAlarma() {
+        val decision = decidirAlarmaTrasDevolucion(
+            "VEH-1",
+            listOf(pendiente("VEH-1", 0.0), pendiente("VEH-1", 0.0)),
+        )
+        assertFalse(decision.mantenerAlarma)
+        assertEquals(0, decision.cantidadElementosPendientes)
+    }
+
+    @Test
+    fun devolucionParcialDelMismoProductoConservaAlarma() {
+        val decision = decidirAlarmaTrasDevolucion("ASG-1", listOf(pendiente("ASG-1", 0.5)))
+        assertTrue(decision.mantenerAlarma)
+    }
+
+    @Test
+    fun salidaDefinitivaContinuaExcluida() {
+        val definitiva = elemento("consumible", "SDR-1", 1.0).copy(esConsumible = true)
+        assertTrue(agruparPrestamosParaAlarma(listOf(definitiva), epoch(2026, 7, 12, 12, 31)).isEmpty())
+    }
+
     private fun elemento(documento: String, asignacion: String, ocupados: Double): PrestamoAlarmaElemento {
         return PrestamoAlarmaElemento(
             documentoId = documento,
@@ -109,6 +171,15 @@ class PrestamosAlarmasTest {
             fechaLimiteEpochMs = epoch(2026, 7, 12, 12, 30),
             esConsumible = false,
             alarmaActiva = true,
+        )
+    }
+
+    private fun pendiente(asignacion: String, ocupados: Double): ElementoAsignacionPendiente {
+        return ElementoAsignacionPendiente(
+            asignacionId = asignacion,
+            cantidadOcupada = ocupados,
+            esConsumible = false,
+            fechaLimiteEpochMs = epoch(2026, 7, 12, 12, 30),
         )
     }
 }
