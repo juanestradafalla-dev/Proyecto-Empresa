@@ -1911,7 +1911,15 @@ internal fun MainActivity.ejecutarRegistroIA(
                     "registrado_por" to info
                 )
                 firestore.collection("entradas").add(entMap).addOnSuccessListener {
-                    actualizarStock(item, cantVal, entrada.unidad, esEntrada = true, referencia = referencia)
+                    val codigoStock = entrada.codigoInterno.ifBlank { item }
+                    registrarEntradaFirestoreYStock(
+                        entrada.copy(codigoInterno = codigoStock),
+                        codigoStock,
+                        "",
+                        itemBase.ifBlank { item },
+                        referencia,
+                        encolarSiFalla = true,
+                    )
                 }
             }
             saved("Entrada guardada")

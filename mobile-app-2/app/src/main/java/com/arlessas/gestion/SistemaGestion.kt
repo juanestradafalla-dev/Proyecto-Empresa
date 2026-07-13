@@ -358,26 +358,44 @@ internal fun MainActivity.actualizarExistenciaImportada(modulo: String, categori
     val ref = firestore.collection("existencias").document(codigo)
     val fecha = now()
     val mod = moduloCanonicoInventario(modulo, item, referencia, categoria)
+    val datosExistencia = mapOf(
+        "modulo" to mod,
+        "categoria" to categoria,
+        "item" to item,
+        "referencia" to referencia,
+        "marca" to marca,
+        "codigo_interno" to codigo,
+        "documento_id" to codigo,
+        "producto_id" to codigo,
+        "unidad" to unidad,
+        "ultima_fecha" to fecha,
+        "ultimo_solicitante" to "Importador Excel/CSV",
+    )
+    val datosMovimiento = mapOf(
+        "fecha" to fecha,
+        "modulo" to mod,
+        "tipoMovimiento" to "Entrada importacion",
+        "item" to item,
+        "referencia" to referencia,
+        "codigo_interno" to codigo,
+        "cantidad" to cantidad,
+        "unidad" to unidad,
+        "observaciones" to "Importado desde Excel/CSV. $obs".trim(),
+        "usuario" to "Importador Excel/CSV",
+    )
     
     firestore.runTransaction { transaction ->
         val snapshot = transaction.get(ref)
-        val anterior = snapshot.getDouble("cantidad") ?: 0.0
+        val anterior = if (snapshot.exists()) numeroDocumento(snapshot, "cantidad", "stock_actual") else 0.0
         val nuevoStock = anterior + cantidad
-
-        val existenciaData = mapOf(
-            "modulo" to mod,
-            "categoria" to categoria,
-            "item" to item,
-            "referencia" to referencia,
-            "marca" to marca,
-            "codigo_interno" to codigo,
+        transaction.set(ref, datosExistencia + mapOf(
             "cantidad" to nuevoStock,
-            "unidad" to unidad,
-            "ultima_fecha" to fecha,
-            "ultimo_solicitante" to "Importador Excel/CSV"
+            "stock_actual" to nuevoStock,
+        ), com.google.firebase.firestore.SetOptions.merge())
+        transaction.set(
+            firestore.collection("movimientos").document(),
+            datosMovimiento + datosTrazabilidadEntradaStock(codigo, codigo, anterior, nuevoStock),
         )
-        transaction.set(ref, existenciaData)
-        
         mapOf("anterior" to anterior, "nuevo" to nuevoStock)
     }.addOnSuccessListener { res ->
         val anterior = res["anterior"] ?: 0.0
@@ -394,6 +412,8 @@ internal fun MainActivity.actualizarExistenciaImportada(modulo: String, categori
         )
         db.insertarEntrada(ent)
         registrarCambioLocal("IMPORTAR_ENTRADA", modulo, codigo, "Entrada masiva", anterior.toString(), nuevoStock.toString())
+    }.addOnFailureListener {
+        encolarEntradaExistenciaPendiente(codigo, cantidad, datosExistencia, datosMovimiento)
     }
 }
 
@@ -852,9 +872,24 @@ internal fun MainActivity.importarHerramientaTallerDesdeCsv(
             "categoria" to subModulo,
             "subcategoria" to subcategoria,
         )
-        firestore.collection("herramientas")
-            .document(claveHerramientaCloud(herramienta))
-            .set(data, com.google.firebase.firestore.SetOptions.merge())
+        val documentoId = claveHerramientaCloud(herramienta)
+        val datosMovimiento = mapOf(
+            "fecha" to now(),
+            "modulo" to TallerCanonicos.MODULO,
+            "tipoMovimiento" to "Entrada importacion",
+            "item" to herramienta.nombre,
+            "referencia" to herramienta.codigo,
+            "cantidad" to cantidad,
+            "unidad" to herramienta.unidad,
+            "submodulo_taller" to subModulo,
+            "usuario" to usuario,
+            "usuario_uid" to uid,
+            "observaciones" to "Importado desde Excel/CSV",
+        )
+        guardarEntradaHerramientaAtomica(documentoId, data, datosMovimiento, cantidad)
+            .addOnFailureListener {
+                encolarEntradaHerramientaPendiente(documentoId, data, datosMovimiento, cantidad)
+            }
     }
 }
 

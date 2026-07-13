@@ -536,7 +536,11 @@ private fun MainActivity.showDialogNuevoConsumibleBodega(onDone: (Herramienta) -
                     "es_consumible" to true,
                     "responsable_entrega" to usuario,
                     "usuario_uid" to auth.currentUser?.uid.orEmpty(),
-                ))
+                ) + if (total > 0.0) {
+                    datosTrazabilidadEntradaStock(referencia.id, referencia.id, 0.0, total)
+                } else {
+                    emptyMap()
+                })
                 null
             }.addOnSuccessListener {
                 val id = db.insertarHerramienta(herramienta)
@@ -635,7 +639,7 @@ private fun MainActivity.showDialogNuevaEntradaConsumibleBodega(onDone: (Herrami
                     "labor" to motivo.text.toString().trim(),
                     "responsable_entrega" to usuario,
                     "usuario_uid" to auth.currentUser?.uid.orEmpty(),
-                ))
+                ) + datosTrazabilidadEntradaStock(referencia.id, referencia.id, total, totalNuevo))
                 null
             }.addOnSuccessListener {
                 db.actualizarCantidadTotalHerramienta(seleccionada.id, totalNuevo, ocupados)

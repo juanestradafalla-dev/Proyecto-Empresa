@@ -1025,74 +1025,64 @@ internal fun MainActivity.registrarMovimientoIngresoBodegaNuevo(
     registradoPor: String,
     motivo: String,
     observaciones: String,
-) {
-    val uid = auth.currentUser?.uid ?: ""
-    obtenerInfoUsuario(uid) { responsable ->
-        val fecha = now()
-        val laborDetalle = listOf(
-            "Producto nuevo",
-            "Categoría: ${herramienta.categoriaTaller()}",
-            motivo.takeIf { it.isNotBlank() }?.let { "Motivo: $it" },
-        ).filterNotNull().joinToString(" | ")
-
-        val mov = Movimiento(
-            id = 0,
-            fecha = fecha,
-            modulo = TallerCanonicos.MODULO,
-            tipoMovimiento = TallerCanonicos.TIPO_MOV_INGRESO_BODEGA,
-            item = herramienta.nombre,
-            referencia = herramienta.codigo,
-            marca = herramienta.marca,
-            cantidad = formatoCantidadTaller(herramienta.cantidadTotal),
-            unidad = herramienta.unidad.ifBlank { "UNIDAD" },
-            solicitante = registradoPor,
-            labor = laborDetalle,
-            maquinaria = TallerCanonicos.SUBMODULO_BODEGA_ROJA,
-            horometro = "",
-            herramientaId = herramienta.id.toString(),
-            estado = "Disponible",
-            observaciones = observaciones,
-        )
-        val idMov = db.insertarMovimiento(mov)
-        marcarCacheTallerTrasCambio("ingreso_bodega_movimiento")
-        val dataMov = mapOf(
-            "id_local" to idMov,
-            "fecha" to mov.fecha,
-            "modulo" to mov.modulo,
-            "tipoMovimiento" to mov.tipoMovimiento,
-            "item" to mov.item,
-            "referencia" to mov.referencia,
-            "marca" to mov.marca,
-            "codigo" to herramienta.codigo,
-            "codigo_principal" to herramienta.codigo,
-            "codigo_qr" to herramienta.codigoQr,
-            "categoria" to TallerCanonicos.SUBMODULO_BODEGA_ROJA,
-            "submodulo_taller" to TallerCanonicos.SUBMODULO_BODEGA_ROJA,
-            "subcategoria" to herramienta.subcategoria,
-            "tipo_herramienta" to herramienta.tipo,
-            "tamano" to herramienta.tamano,
-            "cantidad" to mov.cantidad,
-            "unidad" to mov.unidad,
-            "solicitante" to mov.solicitante,
-            "labor" to mov.labor,
-            "tipo_labor" to motivo,
-            "zona_ejecucion" to TallerCanonicos.SUBMODULO_BODEGA_ROJA,
-            "responsable_entrega" to responsable,
-            "usuario_uid" to uid,
-            "herramientaId" to mov.herramientaId,
-            "herramienta_clave" to claveHerramientaCloud(herramienta),
-            "estado" to mov.estado,
-            "observaciones" to mov.observaciones,
-        )
-
-        if (isNetworkAvailable()) {
-            firestore.collection("movimientos")
-                .add(dataMov)
-                .addOnFailureListener { guardarFirestoreOffline("movimientos", dataMov) }
-        } else {
-            guardarFirestoreOffline("movimientos", dataMov)
-        }
-    }
+    responsableEntrega: String,
+    uid: String,
+): Map<String, Any?> {
+    val fecha = now()
+    val laborDetalle = listOf(
+        "Producto nuevo",
+        "Categoría: ${herramienta.categoriaTaller()}",
+        motivo.takeIf { it.isNotBlank() }?.let { "Motivo: $it" },
+    ).filterNotNull().joinToString(" | ")
+    val mov = Movimiento(
+        id = 0,
+        fecha = fecha,
+        modulo = TallerCanonicos.MODULO,
+        tipoMovimiento = TallerCanonicos.TIPO_MOV_INGRESO_BODEGA,
+        item = herramienta.nombre,
+        referencia = herramienta.codigo,
+        marca = herramienta.marca,
+        cantidad = formatoCantidadTaller(herramienta.cantidadTotal),
+        unidad = herramienta.unidad.ifBlank { "UNIDAD" },
+        solicitante = registradoPor,
+        labor = laborDetalle,
+        maquinaria = TallerCanonicos.SUBMODULO_BODEGA_ROJA,
+        horometro = "",
+        herramientaId = herramienta.id.toString(),
+        estado = "Disponible",
+        observaciones = observaciones,
+    )
+    val idMov = db.insertarMovimiento(mov)
+    marcarCacheTallerTrasCambio("ingreso_bodega_movimiento")
+    return mapOf(
+        "id_local" to idMov,
+        "fecha" to mov.fecha,
+        "modulo" to mov.modulo,
+        "tipoMovimiento" to mov.tipoMovimiento,
+        "item" to mov.item,
+        "referencia" to mov.referencia,
+        "marca" to mov.marca,
+        "codigo" to herramienta.codigo,
+        "codigo_principal" to herramienta.codigo,
+        "codigo_qr" to herramienta.codigoQr,
+        "categoria" to TallerCanonicos.SUBMODULO_BODEGA_ROJA,
+        "submodulo_taller" to TallerCanonicos.SUBMODULO_BODEGA_ROJA,
+        "subcategoria" to herramienta.subcategoria,
+        "tipo_herramienta" to herramienta.tipo,
+        "tamano" to herramienta.tamano,
+        "cantidad" to mov.cantidad,
+        "unidad" to mov.unidad,
+        "solicitante" to mov.solicitante,
+        "labor" to mov.labor,
+        "tipo_labor" to motivo,
+        "zona_ejecucion" to TallerCanonicos.SUBMODULO_BODEGA_ROJA,
+        "responsable_entrega" to responsableEntrega,
+        "usuario_uid" to uid,
+        "herramientaId" to mov.herramientaId,
+        "herramienta_clave" to claveHerramientaCloud(herramienta),
+        "estado" to mov.estado,
+        "observaciones" to mov.observaciones,
+    )
 }
 
 internal fun MainActivity.showIngresoProductoBodegaRojaForm(
@@ -2412,21 +2402,72 @@ internal fun MainActivity.showRegistroHerramientaForm(
                 marcarCacheTallerTrasCambio(accionLocal.lowercase(Locale.getDefault()))
                 obtenerInfoUsuario(auth.currentUser?.uid ?: "") { usuario ->
                     val data = dataHerramientaCloud(herramientaGuardada, herramientaIdLocal, usuario)
+                    val documentoId = claveHerramientaCloud(herramientaGuardada)
+                    val movimientoIngreso = when {
+                        esIngresoBodegaNuevo -> registrarMovimientoIngresoBodegaNuevo(
+                            herramienta = herramientaGuardada,
+                            registradoPor = responsable.text.toString(),
+                            motivo = motivoIngreso.text.toString(),
+                            observaciones = observaciones.text.toString(),
+                            responsableEntrega = usuario,
+                            uid = auth.currentUser?.uid.orEmpty(),
+                        )
+                        herramientaGuardada.cantidadTotal > 0.0 -> mapOf(
+                            "fecha" to now(),
+                            "modulo" to TallerCanonicos.MODULO,
+                            "tipoMovimiento" to "Alta inventario",
+                            "item" to herramientaGuardada.nombre,
+                            "referencia" to herramientaGuardada.codigo,
+                            "cantidad" to herramientaGuardada.cantidadTotal,
+                            "unidad" to herramientaGuardada.unidad,
+                            "submodulo_taller" to herramientaGuardada.subModulo,
+                            "usuario" to usuario,
+                            "usuario_uid" to auth.currentUser?.uid.orEmpty(),
+                            "observaciones" to herramientaGuardada.observaciones,
+                        )
+                        else -> null
+                    }
                     fun finalizarRegistro(mensaje: String) {
-                        if (esIngresoBodegaNuevo) {
-                            registrarMovimientoIngresoBodegaNuevo(
-                                herramienta = herramientaGuardada,
-                                registradoPor = responsable.text.toString(),
-                                motivo = motivoIngreso.text.toString(),
-                                observaciones = observaciones.text.toString(),
-                            )
-                        }
                         saved(mensaje)
                         showTallerSubmoduloMenu(herramientaGuardada.subModulo)
                     }
+                    if (movimientoIngreso != null) {
+                        fun encolarIngreso() {
+                            encolarEntradaHerramientaPendiente(
+                                documentoId,
+                                data,
+                                movimientoIngreso,
+                                herramientaGuardada.cantidadTotal,
+                                registrarSinIncremento = esIngresoBodegaNuevo,
+                            )
+                            finalizarRegistro(
+                                if (esIngresoBodegaNuevo) "Producto ingresado localmente en Bodega Roja"
+                                else "Item Taller registrado localmente",
+                            )
+                        }
+                        if (isNetworkAvailable()) {
+                            guardarEntradaHerramientaAtomica(
+                                documentoId,
+                                data,
+                                movimientoIngreso,
+                                herramientaGuardada.cantidadTotal,
+                                registrarSinIncremento = esIngresoBodegaNuevo,
+                            ).addOnSuccessListener {
+                                finalizarRegistro(
+                                    if (esIngresoBodegaNuevo) "Producto nuevo ingresado en Bodega Roja"
+                                    else "Item Taller registrado en la nube",
+                                )
+                            }.addOnFailureListener {
+                                encolarIngreso()
+                            }
+                        } else {
+                            encolarIngreso()
+                        }
+                        return@obtenerInfoUsuario
+                    }
                     if (isNetworkAvailable()) {
                         firestore.collection("herramientas")
-                            .document(claveHerramientaCloud(herramientaGuardada))
+                            .document(documentoId)
                             .set(data, SetOptions.merge())
                             .addOnSuccessListener {
                                 finalizarRegistro(

@@ -1478,6 +1478,11 @@ internal fun MainActivity.registrarEntradaAseoFirestore(
                     "stock_anterior" to stockAnterior,
                     "stock_nuevo" to stockNuevo,
                     "stock_actualizado" to true
+                ) + datosTrazabilidadEntradaStock(
+                    opcion.documentoId,
+                    opcion.documentoId,
+                    stockAnterior,
+                    stockNuevo,
                 ))
                 mapOf("ant" to stockAnterior, "nve" to stockNuevo)
             }.addOnSuccessListener { res ->
@@ -2828,8 +2833,13 @@ internal fun MainActivity.deltaStockDesdeMovimiento(doc: DocumentSnapshot): Doub
         }
     }
 
-internal fun datosMovimientoReprocesado(stockAnterior: Double, stockNuevo: Double): Map<String, Any?> {
-        return mapOf(
+internal fun datosMovimientoReprocesado(
+        stockAnterior: Double,
+        stockNuevo: Double,
+        movimiento: DocumentSnapshot,
+        documentoId: String,
+    ): Map<String, Any?> {
+        val datos = mutableMapOf<String, Any?>(
             "stock_actualizado" to true,
             "requiere_ajuste_stock" to false,
             "error_stock" to "",
@@ -2838,6 +2848,11 @@ internal fun datosMovimientoReprocesado(stockAnterior: Double, stockNuevo: Doubl
             "reprocesado_stock" to true,
             "reprocesado_fecha" to now()
         )
+        if (stockNuevo > stockAnterior && esMovimientoEntradaStockTrazable(movimiento)) {
+            val productoId = campoDoc(movimiento, "producto_id", "documento_id").ifBlank { documentoId }
+            datos.putAll(datosTrazabilidadEntradaStock(documentoId, productoId, stockAnterior, stockNuevo))
+        }
+        return datos
     }
 
 internal fun MainActivity.reprocesarMovimientoAseo(
@@ -2869,7 +2884,11 @@ internal fun MainActivity.reprocesarMovimientoAseo(
             val stockAnterior = if (snapshot.exists()) numeroDocumento(snapshot, "stock_actual", "cantidad") else opcion.cantidad
             val stockNuevo = stockAnterior + delta
             transaction.set(refStock, aseoFirestoreDataDesdeUbicacion(opcion, stockNuevo), SetOptions.merge())
-            transaction.set(movimiento.reference, datosMovimientoReprocesado(stockAnterior, stockNuevo), SetOptions.merge())
+            transaction.set(
+                movimiento.reference,
+                datosMovimientoReprocesado(stockAnterior, stockNuevo, movimiento, refStock.id),
+                SetOptions.merge(),
+            )
             null
         }.addOnSuccessListener { onSuccess() }
             .addOnFailureListener { onFailure(it) }
@@ -2916,7 +2935,11 @@ internal fun MainActivity.reprocesarMovimientoCombustible(
                     "ultima_fecha" to now(),
                     "ultimo_solicitante" to movimiento.getString("solicitante").orEmpty()
                 ), SetOptions.merge())
-                transaction.set(movimiento.reference, datosMovimientoReprocesado(stockAnterior, stockNuevo), SetOptions.merge())
+                transaction.set(
+                    movimiento.reference,
+                    datosMovimientoReprocesado(stockAnterior, stockNuevo, movimiento, refStock.id),
+                    SetOptions.merge(),
+                )
                 null
             }.addOnSuccessListener { onSuccess() }
                 .addOnFailureListener { onFailure(it) }
@@ -2960,7 +2983,11 @@ internal fun MainActivity.reprocesarMovimientoExistencia(
                     "ultima_fecha" to now(),
                     "ultimo_solicitante" to movimiento.getString("solicitante").orEmpty()
                 ), SetOptions.merge())
-                transaction.set(movimiento.reference, datosMovimientoReprocesado(stockAnterior, stockNuevo), SetOptions.merge())
+                transaction.set(
+                    movimiento.reference,
+                    datosMovimientoReprocesado(stockAnterior, stockNuevo, movimiento, refStock.id),
+                    SetOptions.merge(),
+                )
                 null
             }.addOnSuccessListener { onSuccess() }
                 .addOnFailureListener { onFailure(it) }
@@ -3652,7 +3679,8 @@ internal fun MainActivity.actualizarStock(
 
 internal fun MainActivity.registrarEntradaFirestoreYStock(
         entrada: Entrada, codigoInterno: String, categoria: String, itemBase: String, referenciaCatalogo: String,
-        onSuccess: (() -> Unit)? = null, onFailure: ((Exception) -> Unit)? = null
+        onSuccess: (() -> Unit)? = null, onFailure: ((Exception) -> Unit)? = null,
+        encolarSiFalla: Boolean = false,
     ) {
         val codigo = candidatosCodigoInterno(codigoInterno).firstOrNull() ?: normalizarCodigoInterno(codigoInterno)
         val canonicoEntrada = QuimicosCanonicos.buscarPorDocumento(codigo)
@@ -3669,7 +3697,7 @@ internal fun MainActivity.registrarEntradaFirestoreYStock(
                     "referencia" to entrada.referencia, "codigoInterno" to codigo, "cantidad" to entrada.cantidad,
                     "unidad" to entrada.unidad, "usuario" to infoUsuario, "observaciones" to entrada.observaciones,
                     "codigo_original" to codigoOriginal, "documento_id" to codigo, "producto_id" to codigo, "ubicacion" to ubicacion
-                ))
+                ) + datosTrazabilidadEntradaStock(codigo, codigo, stockAnterior, stockNuevo))
                 if (snapshot.exists()) {
                     transaction.set(refDoc, mapOf(
                         "cantidad" to stockNuevo,
@@ -3711,7 +3739,52 @@ internal fun MainActivity.registrarEntradaFirestoreYStock(
                 res["nve"].toString()
             )
                 onSuccess?.invoke()
-            }.addOnFailureListener { onFailure?.invoke(it) }
+            }.addOnFailureListener { error ->
+                if (encolarSiFalla) {
+                    val codigoVisible = canonicoEntrada?.codigoOriginal ?: entrada.referencia.ifBlank { codigo }
+                    val datosExistencia = mapOf(
+                        "modulo" to entrada.modulo,
+                        "categoria" to categoria,
+                        "item" to itemBase.ifBlank { entrada.item },
+                        "referencia" to entrada.referencia,
+                        "codigo_interno" to codigoVisible,
+                        "codigo_original" to codigoVisible,
+                        "documento_id" to codigo,
+                        "producto_id" to codigo,
+                        "unidad" to entrada.unidad,
+                        "ultima_fecha" to entrada.fecha,
+                        "ultimo_solicitante" to infoUsuario,
+                    )
+                    val datosMovimiento = mapOf(
+                        "fecha" to entrada.fecha,
+                        "modulo" to entrada.modulo,
+                        "tipoMovimiento" to "Entrada",
+                        "item" to entrada.item,
+                        "referencia" to entrada.referencia,
+                        "codigoInterno" to codigo,
+                        "cantidad" to entrada.cantidad,
+                        "unidad" to entrada.unidad,
+                        "usuario" to infoUsuario,
+                        "observaciones" to entrada.observaciones,
+                        "codigo_original" to codigoVisible,
+                        "documento_id" to codigo,
+                        "producto_id" to codigo,
+                    )
+                    val datosCatalogo = datosExistencia.filterKeys {
+                        it !in setOf("unidad", "ultima_fecha", "ultimo_solicitante")
+                    }
+                    encolarEntradaExistenciaPendiente(
+                        codigo,
+                        entrada.cantidad,
+                        datosExistencia,
+                        datosMovimiento,
+                        datosCatalogo,
+                    )
+                    onSuccess?.invoke()
+                } else {
+                    onFailure?.invoke(error)
+                }
+            }
         }
     }
 
