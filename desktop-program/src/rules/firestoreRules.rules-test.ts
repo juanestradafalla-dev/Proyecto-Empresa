@@ -8,6 +8,7 @@ import {
 import { doc, getDoc, setDoc, Timestamp, type Firestore } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  emptyValuationRevision,
   ManualValuationConflictError,
   saveManualUnitValuation,
   valuationRevisionFromData,
@@ -167,5 +168,35 @@ describe('isActiveUser en firestore.rules', () => {
     expect(result.status).toBe('unchanged');
     expect(current.data()?.actualizado_por_uid).toBe('equipo-a');
     expect(current.data()?.actualizado_en.toMillis()).toBe(updatedAt.toMillis());
+  });
+
+  it('crea un documento inexistente aunque el valor inicial sea cero', async () => {
+    await seedUser('activo', { activo: true, rol: 'almacenista' });
+    const context = testEnvironment.authenticatedContext('activo', { email: 'activo@example.com' });
+
+    const result = await saveManualUnitValuation({
+      db: context.firestore() as unknown as Firestore,
+      valuationId: 'existencias__valor-cero',
+      expectedRevision: emptyValuationRevision(),
+      rawValue: '0',
+      moduleName: 'EPP',
+      code: 'EPP-0',
+      description: 'Producto con valor inicial cero',
+      userLabel: 'activo@example.com',
+      userUid: 'activo',
+      online: true,
+      sourceReady: true,
+    });
+    const created = await getDoc(doc(
+      context.firestore(),
+      'valoraciones_inventario',
+      'existencias__valor-cero',
+    ));
+
+    expect(result.status).toBe('saved');
+    expect(created.exists()).toBe(true);
+    expect(created.data()?.valor_unitario).toBe(0);
+    expect(created.data()?.actualizado_por_uid).toBe('activo');
+    expect(created.data()?.actualizado_en).toBeInstanceOf(Timestamp);
   });
 });

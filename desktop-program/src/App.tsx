@@ -71,9 +71,11 @@ import {
   updateSourceWithError,
 } from './valuation/firestoreSync';
 import {
+  captureValuationBaseline,
   emptyValuationRevision,
   ManualValuationBlockedError,
   ManualValuationConflictError,
+  removeValuationBaseline,
   saveManualUnitValuation,
   valuationRevisionFromData,
   type ManualValuationConflict,
@@ -1229,13 +1231,10 @@ function AppShell({ user }: { user: User }) {
   }
 
   function updateValuationDraft(item: InventoryItem, value: string) {
-    setValuationEditBaselines((current) => (
-      current[item.valuationId]
-        ? current
-        : {
-          ...current,
-          [item.valuationId]: valuationRevisions[item.valuationId] ?? emptyValuationRevision(),
-        }
+    setValuationEditBaselines((current) => captureValuationBaseline(
+      current,
+      item.valuationId,
+      valuationRevisions[item.valuationId] ?? emptyValuationRevision(),
     ));
     setValuationDrafts((prev) => ({ ...prev, [item.valuationId]: value }));
     setValuationSaveStates((prev) => {
@@ -1252,11 +1251,7 @@ function AppShell({ user }: { user: User }) {
       delete next[item.valuationId];
       return next;
     });
-    setValuationEditBaselines((prev) => {
-      const next = { ...prev };
-      delete next[item.valuationId];
-      return next;
-    });
+    setValuationEditBaselines((prev) => removeValuationBaseline(prev, item.valuationId));
     setValuationConflicts((prev) => {
       const next = { ...prev };
       delete next[item.valuationId];
@@ -1265,13 +1260,10 @@ function AppShell({ user }: { user: User }) {
   }
 
   function beginValuationEdit(item: InventoryItem) {
-    setValuationEditBaselines((current) => (
-      current[item.valuationId]
-        ? current
-        : {
-          ...current,
-          [item.valuationId]: valuationRevisions[item.valuationId] ?? emptyValuationRevision(),
-        }
+    setValuationEditBaselines((current) => captureValuationBaseline(
+      current,
+      item.valuationId,
+      valuationRevisions[item.valuationId] ?? emptyValuationRevision(),
     ));
   }
 
@@ -1303,7 +1295,10 @@ function AppShell({ user }: { user: User }) {
   async function saveUnitValuation(item: InventoryItem): Promise<boolean> {
     if (savingValuationIds.current.has(item.valuationId)) return false;
     const rawValue = valuationDrafts[item.valuationId];
-    if (rawValue === undefined) return false;
+    if (rawValue === undefined) {
+      setValuationEditBaselines((current) => removeValuationBaseline(current, item.valuationId));
+      return false;
+    }
     if (valuationConflicts[item.valuationId]) {
       setError('Recarga el valor actual del servidor antes de intentar guardar de nuevo.');
       return false;

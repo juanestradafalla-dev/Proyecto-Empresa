@@ -19,6 +19,8 @@ export type ManualValuationConflict = {
   current: ManualValuationRevision;
 };
 
+export type ManualValuationBaselines = Record<string, ManualValuationRevision>;
+
 export type SaveManualValuationResult = {
   status: 'saved' | 'unchanged';
   unitValue: number;
@@ -84,6 +86,25 @@ export function valuationRevisionFromData(
 
 export function emptyValuationRevision(): ManualValuationRevision {
   return valuationRevisionFromData(false);
+}
+
+export function captureValuationBaseline(
+  baselines: ManualValuationBaselines,
+  valuationId: string,
+  latestRevision: ManualValuationRevision,
+): ManualValuationBaselines {
+  if (baselines[valuationId]) return baselines;
+  return { ...baselines, [valuationId]: latestRevision };
+}
+
+export function removeValuationBaseline(
+  baselines: ManualValuationBaselines,
+  valuationId: string,
+): ManualValuationBaselines {
+  if (!baselines[valuationId]) return baselines;
+  const next = { ...baselines };
+  delete next[valuationId];
+  return next;
 }
 
 export function valuationRevisionsMatch(
@@ -155,7 +176,7 @@ export async function saveManualUnitValuation({
       throw new ManualValuationConflictError(current);
     }
 
-    if (current.unitValue === unitValue) {
+    if (current.exists && current.unitValue === unitValue) {
       return { status: 'unchanged', unitValue };
     }
 

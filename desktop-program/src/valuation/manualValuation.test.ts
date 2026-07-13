@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  captureValuationBaseline,
   emptyValuationRevision,
   parseManualUnitValue,
+  removeValuationBaseline,
   valuationRevisionFromData,
   valuationRevisionsMatch,
 } from './manualValuation';
@@ -51,5 +53,26 @@ describe('valoración manual segura', () => {
     expect(parseManualUnitValue('-1')).toBeNull();
     expect(parseManualUnitValue('Infinity')).toBeNull();
     expect(parseManualUnitValue('1250,5')).toBe(1250.5);
+  });
+
+  it('libera el baseline al abandonar sin cambios y captura la revisión más reciente al volver', () => {
+    const valuationId = 'existencias__producto';
+    const firstRevision = valuationRevisionFromData(true, {
+      valor_unitario: 1_500,
+      actualizado_por_uid: 'equipo-a',
+      actualizado_en: { seconds: 100, nanoseconds: 0 },
+    });
+    const latestRevision = valuationRevisionFromData(true, {
+      valor_unitario: 1_700,
+      actualizado_por_uid: 'equipo-b',
+      actualizado_en: { seconds: 101, nanoseconds: 0 },
+    });
+
+    const firstFocus = captureValuationBaseline({}, valuationId, firstRevision);
+    const afterUnchangedBlur = removeValuationBaseline(firstFocus, valuationId);
+    const secondFocus = captureValuationBaseline(afterUnchangedBlur, valuationId, latestRevision);
+
+    expect(afterUnchangedBlur[valuationId]).toBeUndefined();
+    expect(secondFocus[valuationId]).toEqual(latestRevision);
   });
 });
