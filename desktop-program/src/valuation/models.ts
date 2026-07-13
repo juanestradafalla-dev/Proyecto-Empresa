@@ -40,6 +40,7 @@ export type MonthlyValuationSummary = {
   moduleTotals: Record<string, number>;
   createdAt: Date | null;
   createdBy: string;
+  createdByUid: string;
   status: 'guardando' | 'completo' | 'error';
 };
 

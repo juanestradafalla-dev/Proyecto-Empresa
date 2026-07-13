@@ -47,6 +47,22 @@ import InventoryValuationModule from './ui/InventoryValuationModule';
 import ValuationEditModal from './ui/ValuationEditModal';
 import type { CurrentValuationRow, ValuationSaveState } from './valuation/models';
 import {
+  subscribeEntryStockMovements,
+  subscribeEntryValuationRecords,
+  type EntryStockMovement,
+  type EntryValuationRecord,
+} from './valuation/entryValuation';
+import {
+  areSourcesServerReady,
+  CLOSE_REQUIRED_SOURCE_KEYS,
+  createInitialFirestoreSourceStates,
+  FIRESTORE_SOURCE_KEYS,
+  sourceErrorMessages,
+  type FirestoreSourceKey,
+  updateSourceFromSnapshot,
+  updateSourceWithError,
+} from './valuation/firestoreSync';
+import {
   crearReporteMovimientos,
   exportarReporteMovimientos,
   etiquetaPeriodoReporte,
@@ -983,6 +999,9 @@ function AppShell({ user }: { user: User }) {
   const [users, setUsers] = useState<Record<string, UserProfile>>(() => cachedPanelData?.users ?? {});
   const [valuations, setValuations] = useState<Record<string, number>>({});
   const [valuationDocumentIds, setValuationDocumentIds] = useState<Set<string>>(() => new Set());
+  const [entryStockMovements, setEntryStockMovements] = useState<EntryStockMovement[]>([]);
+  const [entryValuationRecords, setEntryValuationRecords] = useState<Record<string, EntryValuationRecord>>({});
+  const [firestoreSources, setFirestoreSources] = useState(createInitialFirestoreSourceStates);
   const [valuationDrafts, setValuationDrafts] = useState<Record<string, string>>({});
   const [valuationSaveStates, setValuationSaveStates] = useState<Record<string, ValuationSaveState>>({});
   const [valuationEditItem, setValuationEditItem] = useState<InventoryItem | null>(null);
@@ -1001,46 +1020,40 @@ function AppShell({ user }: { user: User }) {
   const [manualStatuses, setManualStatuses] = useState<Record<string, string>>({});
   const [lastSync, setLastSync] = useState(() => cachedPanelData?.lastSync ?? '');
   const [online, setOnline] = useState(() => navigator.onLine);
-  const [usingCachedData, setUsingCachedData] = useState(() => Boolean(cachedPanelData));
-  const [loading, setLoading] = useState(() => !cachedPanelData);
   const [error, setError] = useState('');
   const [exportando, setExportando] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const wasFullyLive = useRef(false);
   const isDesktopApp = typeof window !== 'undefined' && Boolean(window.electronAPI?.isElectron);
+  const closeSourcesReady = areSourcesServerReady(firestoreSources, CLOSE_REQUIRED_SOURCE_KEYS);
+  const allSourcesReady = areSourcesServerReady(firestoreSources, FIRESTORE_SOURCE_KEYS);
+  const hasCachedFirestoreSource = CLOSE_REQUIRED_SOURCE_KEYS.some((key) => firestoreSources[key].fromCache);
+  const usingCachedData = !closeSourcesReady && (Boolean(cachedPanelData) || hasCachedFirestoreSource);
+  const loading = CLOSE_REQUIRED_SOURCE_KEYS.some((key) => (
+    !firestoreSources[key].received && !firestoreSources[key].error
+  ));
+  const firestoreErrors = sourceErrorMessages(firestoreSources);
 
-  function markSnapshotLoaded(fromCache: boolean) {
-    setLoading(false);
-    if (fromCache) {
-      setUsingCachedData(true);
-      return;
-    }
-    setUsingCachedData(false);
-    setLastSync(new Date().toISOString());
-    setError('');
+  function recordSourceSnapshot(
+    source: FirestoreSourceKey,
+    metadata: { fromCache: boolean; hasPendingWrites: boolean },
+  ) {
+    setFirestoreSources((current) => updateSourceFromSnapshot(current, source, metadata));
   }
 
-  function handleSnapshotError(message: string) {
-    setLoading(false);
-    if (cachedPanelData && !navigator.onLine) {
-      setUsingCachedData(true);
-      return;
-    }
-    setError(message);
+  function recordSourceError(source: FirestoreSourceKey, message: string) {
+    setFirestoreSources((current) => updateSourceWithError(current, source, message));
   }
 
   useEffect(() => {
-    if (!cachedPanelData) setLoading(true);
     const unsubscribeInventory = onSnapshot(
       collection(db, 'existencias'),
       { includeMetadataChanges: true },
       (snapshot) => {
         setInventory(snapshot.docs.map(readInventoryDoc));
-        markSnapshotLoaded(snapshot.metadata.fromCache);
+        recordSourceSnapshot('inventory', snapshot.metadata);
       },
-      () => {
-        setError('No pude leer inventario. Verifica que el usuario esté activo en Firebase.');
-        setLoading(false);
-      },
+      () => recordSourceError('inventory', 'No se pudo leer. Verifica que el usuario esté activo en Firebase.'),
     );
 
     const unsubscribeMovements = onSnapshot(
@@ -1048,9 +1061,9 @@ function AppShell({ user }: { user: User }) {
       { includeMetadataChanges: true },
       (snapshot) => {
         setMovements(snapshot.docs.map(readMovementDoc));
-        markSnapshotLoaded(snapshot.metadata.fromCache);
+        recordSourceSnapshot('movements', snapshot.metadata);
       },
-      () => setError('No pude leer movimientos. Verifica permisos en Firebase.'),
+      () => recordSourceError('movements', 'No se pudo leer. Verifica permisos en Firebase.'),
     );
 
     const unsubscribeAseoInventory = onSnapshot(
@@ -1058,9 +1071,9 @@ function AppShell({ user }: { user: User }) {
       { includeMetadataChanges: true },
       (snapshot) => {
         setAseoInventory(snapshot.docs.map(readAseoDoc));
-        markSnapshotLoaded(snapshot.metadata.fromCache);
+        recordSourceSnapshot('aseo', snapshot.metadata);
       },
-      () => setError('No pude leer productos de ASEO. Verifica permisos en Firebase.'),
+      () => recordSourceError('aseo', 'No se pudo leer. Verifica permisos en Firebase.'),
     );
 
     const unsubscribeTools = onSnapshot(
@@ -1068,9 +1081,9 @@ function AppShell({ user }: { user: User }) {
       { includeMetadataChanges: true },
       (snapshot) => {
         setTools(snapshot.docs.map(readToolDoc));
-        markSnapshotLoaded(snapshot.metadata.fromCache);
+        recordSourceSnapshot('tools', snapshot.metadata);
       },
-      () => setError('No pude leer herramientas. Verifica permisos en Firebase.'),
+      () => recordSourceError('tools', 'No se pudo leer. Verifica permisos en Firebase.'),
     );
 
     const unsubscribeUsers = onSnapshot(
@@ -1082,9 +1095,9 @@ function AppShell({ user }: { user: User }) {
           profile.email ? [[profile.id, profile], [profile.email, profile]] : [[profile.id, profile]]
         ));
         setUsers(Object.fromEntries(entries));
-        markSnapshotLoaded(snapshot.metadata.fromCache);
+        recordSourceSnapshot('users', snapshot.metadata);
       },
-      () => setError('No pude leer usuarios. Verifica permisos en Firebase.'),
+      () => recordSourceError('users', 'No se pudo leer. Verifica permisos en Firebase.'),
     );
 
     const unsubscribeValuations = onSnapshot(
@@ -1097,8 +1110,25 @@ function AppShell({ user }: { user: User }) {
         });
         setValuations(Object.fromEntries(entries));
         setValuationDocumentIds(new Set(snapshot.docs.map((valuationDoc) => valuationDoc.id)));
+        recordSourceSnapshot('valuations', snapshot.metadata);
       },
-      () => setError('No pude leer la valoración del inventario. Verifica permisos en Firebase.'),
+      () => recordSourceError('valuations', 'No se pudo leer. Verifica permisos en Firebase.'),
+    );
+
+    const unsubscribeEntryMovements = subscribeEntryStockMovements(
+      (entries, metadata) => {
+        setEntryStockMovements(entries);
+        recordSourceSnapshot('entryMovements', metadata);
+      },
+      () => recordSourceError('entryMovements', 'No se pudo leer. Verifica permisos en Firebase.'),
+    );
+
+    const unsubscribeEntryValuations = subscribeEntryValuationRecords(
+      (records, metadata) => {
+        setEntryValuationRecords(records);
+        recordSourceSnapshot('entryValuations', metadata);
+      },
+      () => recordSourceError('entryValuations', 'No se pudo leer. Verifica permisos en Firebase.'),
     );
 
     return () => {
@@ -1108,6 +1138,8 @@ function AppShell({ user }: { user: User }) {
       unsubscribeTools();
       unsubscribeUsers();
       unsubscribeValuations();
+      unsubscribeEntryMovements();
+      unsubscribeEntryValuations();
     };
   }, []);
 
@@ -1122,6 +1154,13 @@ function AppShell({ user }: { user: User }) {
       window.removeEventListener('offline', updateOnline);
     };
   }, []);
+
+  useEffect(() => {
+    if (allSourcesReady && !wasFullyLive.current) {
+      setLastSync(new Date().toISOString());
+    }
+    wasFullyLive.current = allSourcesReady;
+  }, [allSourcesReady]);
 
   useEffect(() => {
     const cache: PanelCache = {
@@ -1512,8 +1551,24 @@ function AppShell({ user }: { user: User }) {
     (sum, item) => sum + (valuations[item.valuationId] ?? 0) * valuationQuantity(item),
     0,
   );
-  const syncMode = !online ? 'offline' : usingCachedData ? 'cached' : 'online';
-  const syncLabel = !online ? 'Sin internet' : usingCachedData ? 'Copia local' : 'En vivo';
+  const syncMode = !online
+    ? 'offline'
+    : allSourcesReady
+      ? 'online'
+      : firestoreErrors.length > 0
+        ? 'offline'
+        : usingCachedData
+          ? 'cached'
+          : 'syncing';
+  const syncLabel = !online
+    ? 'Sin internet'
+    : allSourcesReady
+      ? 'En vivo'
+      : firestoreErrors.length > 0
+        ? 'Con errores'
+        : usingCachedData
+          ? 'Copia local'
+          : 'Sincronizando';
 
   const activeAccent = moduleAccent(module);
   const moduleBlurb = moduleDescription(module);
@@ -1644,6 +1699,13 @@ function AppShell({ user }: { user: User }) {
           </div>
         )}
 
+        {firestoreErrors.map((message) => (
+          <div className="alert-line" key={message}>
+            <AlertTriangle size={18} />
+            {message}
+          </div>
+        ))}
+
         {usingTallerFallback && (
           <div className="alert-line warning">
             <AlertTriangle size={18} />
@@ -1674,6 +1736,9 @@ function AppShell({ user }: { user: User }) {
             user={user}
             currentAverages={valuations}
             currentValuationIds={valuationDocumentIds}
+            firestoreSources={firestoreSources}
+            entryStockMovements={entryStockMovements}
+            entryValuationRecords={entryValuationRecords}
             onEdit={(valuationId) => {
               const item = valuationInventory.find((entry) => entry.valuationId === valuationId);
               if (item) openValuationModal(item);

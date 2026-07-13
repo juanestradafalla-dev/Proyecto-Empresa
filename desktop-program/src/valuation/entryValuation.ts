@@ -51,6 +51,11 @@ export type EntryValuationRecord = {
   valuedAt: Date | null;
 };
 
+export type RealtimeSnapshotMetadata = {
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+};
+
 export type SaveEntryValuationResult = {
   previousAverage: number;
   newAverage: number;
@@ -148,7 +153,7 @@ function parseEntryMovement(id: string, data: DocumentData): EntryStockMovement 
 }
 
 export function subscribeEntryStockMovements(
-  onData: (entries: EntryStockMovement[]) => void,
+  onData: (entries: EntryStockMovement[], metadata: RealtimeSnapshotMetadata) => void,
   onError: (error: Error) => void,
 ) {
   const markedEntries = query(
@@ -158,32 +163,47 @@ export function subscribeEntryStockMovements(
   return onSnapshot(
     markedEntries,
     { includeMetadataChanges: true },
-    (snapshot) => onData(snapshot.docs.flatMap((movementDoc) => {
-      const movement = parseEntryMovement(movementDoc.id, movementDoc.data());
-      return movement ? [movement] : [];
-    })),
+    (snapshot) => onData(
+      snapshot.docs.flatMap((movementDoc) => {
+        const movement = parseEntryMovement(movementDoc.id, movementDoc.data());
+        return movement ? [movement] : [];
+      }),
+      {
+        fromCache: snapshot.metadata.fromCache,
+        hasPendingWrites: snapshot.metadata.hasPendingWrites,
+      },
+    ),
     (error) => onError(error),
   );
 }
 
 export function subscribeEntryValuationRecords(
-  onData: (records: Record<string, EntryValuationRecord>) => void,
+  onData: (
+    records: Record<string, EntryValuationRecord>,
+    metadata: RealtimeSnapshotMetadata,
+  ) => void,
   onError: (error: Error) => void,
 ) {
   return onSnapshot(
     collection(db, ENTRY_VALUATIONS_COLLECTION),
     { includeMetadataChanges: true },
-    (snapshot) => onData(Object.fromEntries(snapshot.docs.map((recordDoc) => {
-      const data = recordDoc.data();
-      const valuedAt = timestampValue(data.valorado_en);
-      return [recordDoc.id, {
-        movementId: recordDoc.id,
-        entryUnitValue: numericValue(data, 'valor_unitario_entrada'),
-        previousAverage: numericValue(data, 'promedio_anterior'),
-        newAverage: numericValue(data, 'promedio_nuevo'),
-        valuedAt: valuedAt?.toDate() ?? null,
-      } satisfies EntryValuationRecord];
-    }))),
+    (snapshot) => onData(
+      Object.fromEntries(snapshot.docs.map((recordDoc) => {
+        const data = recordDoc.data();
+        const valuedAt = timestampValue(data.valorado_en);
+        return [recordDoc.id, {
+          movementId: recordDoc.id,
+          entryUnitValue: numericValue(data, 'valor_unitario_entrada'),
+          previousAverage: numericValue(data, 'promedio_anterior'),
+          newAverage: numericValue(data, 'promedio_nuevo'),
+          valuedAt: valuedAt?.toDate() ?? null,
+        } satisfies EntryValuationRecord];
+      })),
+      {
+        fromCache: snapshot.metadata.fromCache,
+        hasPendingWrites: snapshot.metadata.hasPendingWrites,
+      },
+    ),
     (error) => onError(error),
   );
 }

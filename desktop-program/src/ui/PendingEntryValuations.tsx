@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import type { User } from 'firebase/auth';
 import { AlertTriangle, CheckCircle2, Clock3, Save, WifiOff } from 'lucide-react';
 import { moduleAccent } from '../theme';
@@ -7,8 +7,6 @@ import {
   InvalidEntryValuationDataError,
   PreviousEntryPendingError,
   saveEntryValuation,
-  subscribeEntryStockMovements,
-  subscribeEntryValuationRecords,
   type EntryStockMovement,
   type EntryValuationRecord,
 } from '../valuation/entryValuation';
@@ -97,55 +95,23 @@ export default function PendingEntryValuations({
   user,
   currentAverages,
   currentValuationIds,
+  entries,
+  records,
+  loading,
+  loadError,
 }: {
   online: boolean;
   user: User;
   currentAverages: Record<string, number>;
   currentValuationIds: ReadonlySet<string>;
+  entries: EntryStockMovement[];
+  records: Record<string, EntryValuationRecord>;
+  loading: boolean;
+  loadError: string;
 }) {
-  const [entries, setEntries] = useState<EntryStockMovement[]>([]);
-  const [records, setRecords] = useState<Record<string, EntryValuationRecord>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState('');
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    let movementsLoaded = false;
-    let recordsLoaded = false;
-    const finishLoading = () => {
-      if (movementsLoaded && recordsLoaded) setLoading(false);
-    };
-    const unsubscribeMovements = subscribeEntryStockMovements(
-      (nextEntries) => {
-        movementsLoaded = true;
-        setEntries(nextEntries);
-        finishLoading();
-      },
-      (error) => {
-        console.error('No se pudieron escuchar las entradas por valorar:', error);
-        setLoadError('No se pudieron leer los movimientos entrada_stock. Verifica la conexión y los permisos.');
-        setLoading(false);
-      },
-    );
-    const unsubscribeRecords = subscribeEntryValuationRecords(
-      (nextRecords) => {
-        recordsLoaded = true;
-        setRecords(nextRecords);
-        finishLoading();
-      },
-      (error) => {
-        console.error('No se pudieron escuchar las valoraciones de entradas:', error);
-        setLoadError('No se pudieron leer las valoraciones de entradas. Verifica los permisos.');
-        setLoading(false);
-      },
-    );
-    return () => {
-      unsubscribeMovements();
-      unsubscribeRecords();
-    };
-  }, []);
 
   const valuedMovementIds = useMemo(() => new Set(Object.keys(records)), [records]);
   const sequencedEntries = useMemo(
