@@ -1,5 +1,6 @@
 import { X } from 'lucide-react';
 import type { ValuationSaveState } from '../valuation/models';
+import type { ManualValuationConflict } from '../valuation/manualValuation';
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('es-CO', {
@@ -20,8 +21,10 @@ export default function ValuationEditModal({
   quantity,
   value,
   saveState,
-  online,
+  saveBlockedReason,
+  conflict,
   onChange,
+  onReload,
   onSave,
   onClose,
 }: {
@@ -32,14 +35,17 @@ export default function ValuationEditModal({
   quantity: number;
   value: string;
   saveState?: ValuationSaveState;
-  online: boolean;
+  saveBlockedReason: string;
+  conflict?: ManualValuationConflict;
   onChange: (value: string) => void;
+  onReload: () => void;
   onSave: () => void;
   onClose: () => void;
 }) {
   const parsedValue = Number(value.replace(',', '.'));
   const previewUnitValue = Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : 0;
   const saving = saveState === 'saving';
+  const blocked = Boolean(saveBlockedReason) || Boolean(conflict);
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
@@ -83,16 +89,23 @@ export default function ValuationEditModal({
                 step="1"
                 inputMode="decimal"
                 value={value}
-                disabled={!online || saving}
+                disabled={saving}
                 onChange={(event) => onChange(event.target.value)}
               />
             </span>
           </label>
           {saveState === 'error' && <p className="form-error">Revisa el valor unitario e intenta nuevamente.</p>}
-          {!online && <p className="form-error">Conéctate a Firestore para guardar cambios.</p>}
+          {conflict && (
+            <div className="valuation-conflict" role="alert">
+              <strong>Este valor cambió en otro equipo.</strong>
+              <span>El valor actual del servidor es {formatCurrency(conflict.current.unitValue)}. No se escribió ningún cambio.</span>
+              <button type="button" onClick={onReload}>Recargar valor del servidor</button>
+            </div>
+          )}
+          {saveBlockedReason && <p className="form-error">{saveBlockedReason}</p>}
           <footer className="valuation-modal-actions">
             <button type="button" disabled={saving} onClick={onClose}>Cancelar</button>
-            <button className="tool-button" type="submit" disabled={!online || saving || !value.trim()}>
+            <button className="tool-button" type="submit" disabled={blocked || saving || !value.trim()}>
               {saving ? 'Guardando...' : 'Guardar valor'}
             </button>
           </footer>

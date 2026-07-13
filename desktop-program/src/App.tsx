@@ -21,8 +21,15 @@ import {
   X,
 } from 'lucide-react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User } from 'firebase/auth';
-import { collection, doc, onSnapshot, QueryDocumentSnapshot, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { collection, doc, onSnapshot, QueryDocumentSnapshot, updateDoc } from 'firebase/firestore';
+import { auth, db, firebaseProjectId } from './firebase';
+import { verifyUserAuthorization } from './auth/authorization';
+import {
+  hasPanelCacheData,
+  loadPanelCache,
+  removeLegacyPanelCache,
+  savePanelCache,
+} from './cache/panelCache';
 import {
   AGROQUIMICOS_UBICACIONES,
   coincideUbicacionAgroquimicos,
@@ -58,10 +65,20 @@ import {
   createInitialFirestoreSourceStates,
   FIRESTORE_SOURCE_KEYS,
   sourceErrorMessages,
+  isServerSourceReady,
   type FirestoreSourceKey,
   updateSourceFromSnapshot,
   updateSourceWithError,
 } from './valuation/firestoreSync';
+import {
+  emptyValuationRevision,
+  ManualValuationBlockedError,
+  ManualValuationConflictError,
+  saveManualUnitValuation,
+  valuationRevisionFromData,
+  type ManualValuationConflict,
+  type ManualValuationRevision,
+} from './valuation/manualValuation';
 import {
   crearReporteMovimientos,
   exportarReporteMovimientos,
@@ -168,50 +185,7 @@ type Totals = Record<string, { entradas: number; salidas: number }>;
 
 type StatusOrder = 'default' | 'good-first' | 'maintenance-first';
 
-type PanelCache = {
-  version: 1;
-  inventory: InventoryItem[];
-  aseoInventory: InventoryItem[];
-  tools: InventoryItem[];
-  movements: Movement[];
-  users: Record<string, UserProfile>;
-  lastSync: string;
-};
-
-const panelCacheKey = 'gestion-almacen-panel-cache-v1';
 const retiredToolCodes = new Set(['001', '002', 'QR-001', 'QR-002']);
-
-function hasPanelCacheData(cache: PanelCache) {
-  return cache.inventory.length > 0 || cache.aseoInventory.length > 0 || cache.tools.length > 0 || cache.movements.length > 0 || Object.keys(cache.users).length > 0;
-}
-
-function loadPanelCache(): PanelCache | null {
-  try {
-    const raw = window.localStorage.getItem(panelCacheKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PanelCache>;
-    if (!Array.isArray(parsed.inventory) || !Array.isArray(parsed.tools) || !Array.isArray(parsed.movements)) return null;
-    return {
-      version: 1,
-      inventory: parsed.inventory.map(withValuationId),
-      aseoInventory: Array.isArray(parsed.aseoInventory) ? parsed.aseoInventory.map(withValuationId) : [],
-      tools: parsed.tools.map(withValuationId),
-      movements: parsed.movements,
-      users: parsed.users && typeof parsed.users === 'object' ? parsed.users : {},
-      lastSync: typeof parsed.lastSync === 'string' ? parsed.lastSync : '',
-    };
-  } catch {
-    return null;
-  }
-}
-
-function savePanelCache(cache: PanelCache) {
-  try {
-    window.localStorage.setItem(panelCacheKey, JSON.stringify(cache));
-  } catch {
-    // Si el almacenamiento local se llena o falla, Firestore conserva su propia cache.
-  }
-}
 
 function textValue(data: Record<string, unknown>, ...keys: string[]) {
   for (const key of keys) {
@@ -989,20 +963,33 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
 
 
 function AppShell({ user }: { user: User }) {
-  const [cachedPanelData] = useState(loadPanelCache);
+  const cacheContext = useMemo(() => ({ uid: user.uid, projectId: firebaseProjectId }), [user.uid]);
+  const [cachedPanelData] = useState(() => {
+    const cached = loadPanelCache<InventoryItem>(window.localStorage, cacheContext);
+    if (!cached) return null;
+    return {
+      ...cached,
+      inventory: cached.inventory.map(withValuationId),
+      aseoInventory: cached.aseoInventory.map(withValuationId),
+      tools: cached.tools.map(withValuationId),
+    };
+  });
   const [module, setModule] = useState<string>(inventoryValuationModule);
   const [search, setSearch] = useState('');
   const [inventory, setInventory] = useState<InventoryItem[]>(() => cachedPanelData?.inventory ?? []);
   const [aseoInventory, setAseoInventory] = useState<InventoryItem[]>(() => cachedPanelData?.aseoInventory ?? []);
   const [tools, setTools] = useState<InventoryItem[]>(() => cachedPanelData?.tools ?? []);
-  const [movements, setMovements] = useState<Movement[]>(() => cachedPanelData?.movements ?? []);
-  const [users, setUsers] = useState<Record<string, UserProfile>>(() => cachedPanelData?.users ?? {});
+  const [movements, setMovements] = useState<Movement[]>([]);
+  const [users, setUsers] = useState<Record<string, UserProfile>>({});
   const [valuations, setValuations] = useState<Record<string, number>>({});
+  const [valuationRevisions, setValuationRevisions] = useState<Record<string, ManualValuationRevision>>({});
   const [valuationDocumentIds, setValuationDocumentIds] = useState<Set<string>>(() => new Set());
   const [entryStockMovements, setEntryStockMovements] = useState<EntryStockMovement[]>([]);
   const [entryValuationRecords, setEntryValuationRecords] = useState<Record<string, EntryValuationRecord>>({});
   const [firestoreSources, setFirestoreSources] = useState(createInitialFirestoreSourceStates);
   const [valuationDrafts, setValuationDrafts] = useState<Record<string, string>>({});
+  const [valuationEditBaselines, setValuationEditBaselines] = useState<Record<string, ManualValuationRevision>>({});
+  const [valuationConflicts, setValuationConflicts] = useState<Record<string, ManualValuationConflict>>({});
   const [valuationSaveStates, setValuationSaveStates] = useState<Record<string, ValuationSaveState>>({});
   const [valuationEditItem, setValuationEditItem] = useState<InventoryItem | null>(null);
   const [evidenceMovement, setEvidenceMovement] = useState<Movement | null>(null);
@@ -1024,6 +1011,7 @@ function AppShell({ user }: { user: User }) {
   const [exportando, setExportando] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const wasFullyLive = useRef(false);
+  const savingValuationIds = useRef(new Set<string>());
   const isDesktopApp = typeof window !== 'undefined' && Boolean(window.electronAPI?.isElectron);
   const closeSourcesReady = areSourcesServerReady(firestoreSources, CLOSE_REQUIRED_SOURCE_KEYS);
   const allSourcesReady = areSourcesServerReady(firestoreSources, FIRESTORE_SOURCE_KEYS);
@@ -1109,6 +1097,10 @@ function AppShell({ user }: { user: User }) {
           return [valuationDoc.id, Math.max(value, 0)];
         });
         setValuations(Object.fromEntries(entries));
+        setValuationRevisions(Object.fromEntries(snapshot.docs.map((valuationDoc) => [
+          valuationDoc.id,
+          valuationRevisionFromData(true, valuationDoc.data()),
+        ])));
         setValuationDocumentIds(new Set(snapshot.docs.map((valuationDoc) => valuationDoc.id)));
         recordSourceSnapshot('valuations', snapshot.metadata);
       },
@@ -1163,17 +1155,16 @@ function AppShell({ user }: { user: User }) {
   }, [allSourcesReady]);
 
   useEffect(() => {
-    const cache: PanelCache = {
-      version: 1,
+    const cache = {
       inventory,
       aseoInventory,
       tools,
-      movements,
-      users,
       lastSync,
     };
-    if (hasPanelCacheData(cache)) savePanelCache(cache);
-  }, [aseoInventory, inventory, lastSync, movements, tools, users]);
+    if (hasPanelCacheData(cache)) {
+      savePanelCache(window.localStorage, cacheContext, cache);
+    }
+  }, [aseoInventory, cacheContext, inventory, lastSync, tools]);
 
   const inventoryTableRef = useRef<HTMLDivElement>(null);
 
@@ -1238,8 +1229,17 @@ function AppShell({ user }: { user: User }) {
   }
 
   function updateValuationDraft(item: InventoryItem, value: string) {
+    setValuationEditBaselines((current) => (
+      current[item.valuationId]
+        ? current
+        : {
+          ...current,
+          [item.valuationId]: valuationRevisions[item.valuationId] ?? emptyValuationRevision(),
+        }
+    ));
     setValuationDrafts((prev) => ({ ...prev, [item.valuationId]: value }));
     setValuationSaveStates((prev) => {
+      if (prev[item.valuationId] === 'conflict') return prev;
       const next = { ...prev };
       delete next[item.valuationId];
       return next;
@@ -1252,56 +1252,137 @@ function AppShell({ user }: { user: User }) {
       delete next[item.valuationId];
       return next;
     });
+    setValuationEditBaselines((prev) => {
+      const next = { ...prev };
+      delete next[item.valuationId];
+      return next;
+    });
+    setValuationConflicts((prev) => {
+      const next = { ...prev };
+      delete next[item.valuationId];
+      return next;
+    });
+  }
+
+  function beginValuationEdit(item: InventoryItem) {
+    setValuationEditBaselines((current) => (
+      current[item.valuationId]
+        ? current
+        : {
+          ...current,
+          [item.valuationId]: valuationRevisions[item.valuationId] ?? emptyValuationRevision(),
+        }
+    ));
+  }
+
+  function valuationInventorySource(item: InventoryItem): FirestoreSourceKey {
+    if (item.id.startsWith('aseo-')) return 'aseo';
+    if (item.id.startsWith('herramienta-') || item.modulo === 'TALLER') return 'tools';
+    return 'inventory';
+  }
+
+  function manualValuationSourcesReady(item: InventoryItem) {
+    return isServerSourceReady(firestoreSources.valuations)
+      && isServerSourceReady(firestoreSources[valuationInventorySource(item)]);
+  }
+
+  function manualValuationBlockedReason(item: InventoryItem) {
+    if (!online) return 'Conéctate a Firestore para guardar cambios.';
+    if (usingTallerFallback) return 'No se puede valorar Taller usando datos de respaldo.';
+    const sources = [
+      firestoreSources.valuations,
+      firestoreSources[valuationInventorySource(item)],
+    ];
+    if (sources.some((source) => source.error)) return 'No se pudieron confirmar los datos con el servidor.';
+    if (sources.some((source) => !source.received)) return 'Espera a que carguen los datos desde el servidor.';
+    if (sources.some((source) => source.fromCache)) return 'No se puede guardar mientras los datos provengan de caché.';
+    if (sources.some((source) => source.hasPendingWrites)) return 'Espera a que terminen las escrituras pendientes.';
+    return '';
   }
 
   async function saveUnitValuation(item: InventoryItem): Promise<boolean> {
+    if (savingValuationIds.current.has(item.valuationId)) return false;
     const rawValue = valuationDrafts[item.valuationId];
     if (rawValue === undefined) return false;
-    if (!rawValue.trim()) {
-      resetValuationDraft(item);
+    if (valuationConflicts[item.valuationId]) {
+      setError('Recarga el valor actual del servidor antes de intentar guardar de nuevo.');
       return false;
     }
 
-    const unitValue = Number(rawValue.replace(',', '.'));
-    if (!Number.isFinite(unitValue) || unitValue < 0) {
-      setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'error' }));
-      setError('El valor unitario debe ser un número igual o mayor que cero.');
-      return false;
-    }
-
-    if (unitValue === (valuations[item.valuationId] ?? 0)) {
-      resetValuationDraft(item);
-      return true;
-    }
-
+    savingValuationIds.current.add(item.valuationId);
     setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'saving' }));
     try {
-      await setDoc(doc(db, 'valoraciones_inventario', item.valuationId), {
-        valor_unitario: unitValue,
-        modulo: item.modulo,
-        codigo: item.codigo,
-        descripcion: item.descripcion,
-        actualizado_por: user.email || user.uid,
-        actualizado_por_uid: user.uid,
-        actualizado_en: serverTimestamp(),
-        origen_actualizacion: 'manual',
-      }, { merge: true });
-      setValuations((prev) => ({ ...prev, [item.valuationId]: unitValue }));
+      const result = await saveManualUnitValuation({
+        db,
+        valuationId: item.valuationId,
+        expectedRevision: valuationEditBaselines[item.valuationId]
+          ?? valuationRevisions[item.valuationId]
+          ?? emptyValuationRevision(),
+        rawValue,
+        moduleName: item.modulo,
+        code: item.codigo,
+        description: item.descripcion,
+        userLabel: user.email || user.uid,
+        userUid: user.uid,
+        online,
+        sourceReady: manualValuationSourcesReady(item) && !usingTallerFallback,
+      });
+      setValuations((prev) => ({ ...prev, [item.valuationId]: result.unitValue }));
       resetValuationDraft(item);
       setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'saved' }));
       setError('');
       return true;
-    } catch (error) {
-      console.error('No pude guardar la valoración unitaria:', error);
+    } catch (caught) {
+      if (caught instanceof ManualValuationConflictError) {
+        const conflict = { current: caught.current };
+        setValuationConflicts((prev) => ({ ...prev, [item.valuationId]: conflict }));
+        setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'conflict' }));
+        setValuationEditItem(item);
+        setError(`Conflicto en ${item.descripcion}: el servidor tiene ${formatCurrency(caught.current.unitValue)}. No se escribió el cambio.`);
+        return false;
+      }
+      console.error('No pude guardar la valoración unitaria:', caught);
       setValuationSaveStates((prev) => ({ ...prev, [item.valuationId]: 'error' }));
-      setError('No se pudo guardar el valor unitario. Verifica la conexión y los permisos de Firebase.');
+      setError(caught instanceof ManualValuationBlockedError
+        ? caught.message
+        : 'No se pudo guardar el valor unitario. Verifica la conexión y los permisos de Firebase.');
       return false;
+    } finally {
+      savingValuationIds.current.delete(item.valuationId);
     }
   }
 
   function openValuationModal(item: InventoryItem) {
+    setValuationEditBaselines((current) => ({
+      ...current,
+      [item.valuationId]: valuationRevisions[item.valuationId] ?? emptyValuationRevision(),
+    }));
+    setValuationConflicts((current) => {
+      const next = { ...current };
+      delete next[item.valuationId];
+      return next;
+    });
     updateValuationDraft(item, String(valuations[item.valuationId] ?? 0));
     setValuationEditItem(item);
+  }
+
+  function reloadValuationConflict(item: InventoryItem) {
+    const conflict = valuationConflicts[item.valuationId];
+    if (!conflict) return;
+    setValuations((current) => ({ ...current, [item.valuationId]: conflict.current.unitValue }));
+    setValuationEditBaselines((current) => ({ ...current, [item.valuationId]: conflict.current }));
+    setValuationDrafts((current) => ({ ...current, [item.valuationId]: String(conflict.current.unitValue) }));
+    setValuationConflicts((current) => {
+      const next = { ...current };
+      delete next[item.valuationId];
+      return next;
+    });
+    setValuationSaveStates((current) => {
+      const next = { ...current };
+      delete next[item.valuationId];
+      return next;
+    });
+    setError('');
   }
 
   function closeValuationModal() {
@@ -1326,13 +1407,16 @@ function AppShell({ user }: { user: User }) {
         ? 'Guardado'
         : saveState === 'error'
           ? 'Revisa el valor'
+          : saveState === 'conflict'
+            ? 'Conflicto: recarga'
           : '';
-    const disabled = !online || usingTallerFallback;
+    const blockedReason = manualValuationBlockedReason(item);
+    const disabled = Boolean(blockedReason);
 
     return (
       <>
         <td className="valuation-unit-cell">
-          <label className={`valuation-input ${saveState ?? ''}`} title={disabled ? 'Conéctate a Firestore para editar la valoración.' : 'Se guarda al salir del campo o presionar Enter.'}>
+          <label className={`valuation-input ${saveState ?? ''}`} title={blockedReason || 'Se guarda al salir del campo o presionar Enter.'}>
             <span>$</span>
             <input
               aria-label={`Valor unitario de ${item.descripcion}`}
@@ -1343,6 +1427,7 @@ function AppShell({ user }: { user: User }) {
               placeholder="0"
               value={inputValue}
               disabled={disabled || saveState === 'saving'}
+              onFocus={() => beginValuationEdit(item)}
               onChange={(event) => updateValuationDraft(item, event.target.value)}
               onBlur={() => saveUnitValuation(item)}
               onKeyDown={(event) => {
@@ -2101,8 +2186,10 @@ function AppShell({ user }: { user: User }) {
           quantity={valuationQuantity(valuationEditItem)}
           value={valuationDrafts[valuationEditItem.valuationId] ?? String(valuations[valuationEditItem.valuationId] ?? 0)}
           saveState={valuationSaveStates[valuationEditItem.valuationId]}
-          online={online}
+          saveBlockedReason={manualValuationBlockedReason(valuationEditItem)}
+          conflict={valuationConflicts[valuationEditItem.valuationId]}
           onChange={(value) => updateValuationDraft(valuationEditItem, value)}
+          onReload={() => reloadValuationConflict(valuationEditItem)}
           onSave={() => { void saveValuationModal(); }}
           onClose={closeValuationModal}
         />
@@ -2437,24 +2524,81 @@ function EvidenceModal({ movement, registeredBy, onClose }: { movement: Movement
   );
 }
 
+function AuthorizationBlockedScreen({
+  failed,
+  onRetry,
+}: {
+  failed: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <main className="loading-screen authorization-blocked">
+      <ShieldCheck size={34} />
+      <strong>{failed ? 'No se pudo confirmar la autorización' : 'Acceso no autorizado'}</strong>
+      <span>{failed
+        ? 'Se necesita conexión con Firestore para validar tu usuario antes de mostrar el panel.'
+        : 'Tu usuario debe estar activo y tener un rol permitido.'}</span>
+      <div>
+        {failed && <button type="button" onClick={onRetry}>Reintentar</button>}
+        <button type="button" onClick={() => { void signOut(auth); }}>Cerrar sesión</button>
+      </div>
+    </main>
+  );
+}
+
+type AuthorizationStatus = 'idle' | 'checking' | 'authorized' | 'denied' | 'error';
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
+  const [authorizationStatus, setAuthorizationStatus] = useState<AuthorizationStatus>('idle');
+  const [authorizationAttempt, setAuthorizationAttempt] = useState(0);
+
+  useEffect(() => {
+    removeLegacyPanelCache(window.localStorage);
+  }, []);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
+      setAuthorizationStatus(currentUser ? 'checking' : 'idle');
       setChecking(false);
     });
   }, []);
 
-  if (checking) {
-    return <main className="loading-screen">Preparando panel...</main>;
+  useEffect(() => {
+    if (!user) return undefined;
+    let active = true;
+    setAuthorizationStatus('checking');
+    verifyUserAuthorization(db, user)
+      .then((authorized) => {
+        if (active) setAuthorizationStatus(authorized ? 'authorized' : 'denied');
+      })
+      .catch((error) => {
+        console.error('No pude confirmar la autorización del usuario:', error);
+        if (active) setAuthorizationStatus('error');
+      });
+    return () => {
+      active = false;
+    };
+  }, [authorizationAttempt, user]);
+
+  if (checking || (user && authorizationStatus === 'checking')) {
+    return <main className="loading-screen">Verificando autorización...</main>;
   }
 
   if (!user) {
     return <LoginScreen onLogin={(email, password) => signInWithEmailAndPassword(auth, email, password).then(() => undefined)} />;
   }
 
-  return <AppShell user={user} />;
+  if (authorizationStatus !== 'authorized') {
+    return (
+      <AuthorizationBlockedScreen
+        failed={authorizationStatus === 'error'}
+        onRetry={() => setAuthorizationAttempt((attempt) => attempt + 1)}
+      />
+    );
+  }
+
+  return <AppShell key={`${firebaseProjectId}:${user.uid}`} user={user} />;
 }
