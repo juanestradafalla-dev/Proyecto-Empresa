@@ -65,6 +65,75 @@ service cloud.firestore {
         && request.resource.data.actualizado_en is timestamp;
     }
 
+    function isValidMonthlyValuationClose(periodo) {
+      return request.resource.data.keys().hasOnly([
+          "periodo",
+          "resumen",
+          "fecha",
+          "usuario",
+          "usuario_uid",
+          "estado"
+        ])
+        && periodo.matches("^[0-9]{4}-(0[1-9]|1[0-2])$")
+        && request.resource.data.periodo == periodo
+        && request.resource.data.resumen is map
+        && request.resource.data.resumen.keys().hasOnly([
+          "valor_total",
+          "cantidad_productos",
+          "productos_con_valor",
+          "productos_sin_valor",
+          "porcentaje_valorado",
+          "totales_modulo"
+        ])
+        && request.resource.data.resumen.valor_total is number
+        && request.resource.data.resumen.valor_total >= 0
+        && request.resource.data.resumen.cantidad_productos is int
+        && request.resource.data.resumen.cantidad_productos >= 0
+        && request.resource.data.resumen.productos_con_valor is int
+        && request.resource.data.resumen.productos_con_valor >= 0
+        && request.resource.data.resumen.productos_sin_valor is int
+        && request.resource.data.resumen.productos_sin_valor >= 0
+        && request.resource.data.resumen.productos_con_valor
+          + request.resource.data.resumen.productos_sin_valor
+          == request.resource.data.resumen.cantidad_productos
+        && request.resource.data.resumen.porcentaje_valorado is number
+        && request.resource.data.resumen.porcentaje_valorado >= 0
+        && request.resource.data.resumen.porcentaje_valorado <= 100
+        && request.resource.data.resumen.totales_modulo is map
+        && request.resource.data.fecha is timestamp
+        && request.resource.data.usuario is string
+        && request.resource.data.usuario.size() > 0
+        && request.resource.data.usuario_uid == request.auth.uid
+        && request.resource.data.estado in ["guardando", "completo", "error"];
+    }
+
+    function isValidMonthlyValuationItem() {
+      return request.resource.data.keys().hasOnly([
+          "modulo",
+          "codigo",
+          "referencia",
+          "producto",
+          "cantidad",
+          "unidad",
+          "valor_unitario",
+          "valor_total"
+        ])
+        && request.resource.data.modulo is string
+        && request.resource.data.modulo.size() > 0
+        && request.resource.data.codigo is string
+        && request.resource.data.referencia is string
+        && request.resource.data.producto is string
+        && request.resource.data.producto.size() > 0
+        && request.resource.data.cantidad is number
+        && request.resource.data.cantidad >= 0
+        && request.resource.data.unidad is string
+        && request.resource.data.unidad.size() > 0
+        && request.resource.data.valor_unitario is number
+        && request.resource.data.valor_unitario >= 0
+        && request.resource.data.valor_total is number
+        && request.resource.data.valor_total >= 0;
+    }
+
     function isSharedBusinessCollection(collectionName) {
       return collectionName in [
         // GestionAndroid apps + desktop-program
@@ -237,6 +306,30 @@ service cloud.firestore {
     match /valoraciones_inventario/{valoracionId} {
       allow read: if isActiveUser();
       allow create, update: if isActiveUser() && isValidInventoryValuation();
+    }
+
+    match /cierres_valoracion_inventario/{periodo} {
+      allow read: if isActiveUser();
+      allow create: if isActiveUser()
+        && !exists(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo))
+        && request.resource.data.estado == "guardando"
+        && isValidMonthlyValuationClose(periodo);
+      allow update: if isActiveUser()
+        && resource.data.estado in ["guardando", "error"]
+        && (
+          (resource.data.estado == "guardando" && request.resource.data.estado in ["completo", "error"])
+          || (resource.data.estado == "error" && request.resource.data.estado == "guardando")
+        )
+        && request.resource.data.periodo == resource.data.periodo
+        && request.resource.data.usuario_uid == resource.data.usuario_uid
+        && isValidMonthlyValuationClose(periodo);
+
+      match /items/{itemId} {
+        allow read: if isActiveUser();
+        allow create, update: if isActiveUser()
+          && get(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo)).data.estado == "guardando"
+          && isValidMonthlyValuationItem();
+      }
     }
 
     match /{collectionName}/{document=**} {
