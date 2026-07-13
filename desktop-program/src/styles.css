@@ -2461,6 +2461,141 @@ tbody tr:hover {
   }
 }
 
+.entry-valuations-view {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.entry-valuations-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.entry-valuations-heading h2 {
+  margin: 2px 0 5px;
+  color: var(--green-900);
+}
+
+.entry-valuations-heading p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.entry-valuations-heading code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  color: var(--green-900);
+  background: #e8f4e9;
+}
+
+.entry-valuations-counters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.entry-valuations-counters span,
+.entry-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.entry-valuations-counters .pending,
+.entry-status.pending {
+  color: #875204;
+  background: #fff4d8;
+}
+
+.entry-valuations-counters .valued,
+.entry-status.valued {
+  color: #0b6b34;
+  background: #e5f7ea;
+}
+
+.entry-valuations-panel {
+  min-width: 0;
+}
+
+.entry-valuations-table-wrap {
+  max-height: calc(100vh - 300px);
+}
+
+.entry-valuations-table {
+  min-width: 105rem;
+}
+
+.entry-valuations-table td {
+  vertical-align: top;
+}
+
+.entry-valuations-table tr.entry-inconsistent td {
+  background: #fff8f3;
+}
+
+.entry-date {
+  display: inline-block;
+  min-width: 8rem;
+  font-size: 0.75rem;
+  white-space: normal;
+}
+
+.entry-value-input-cell input {
+  width: 8rem;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.entry-value-input-cell input:focus {
+  border-color: var(--green-500);
+  outline: 2px solid rgba(5, 166, 75, 0.12);
+}
+
+.entry-average-preview {
+  color: var(--green-900);
+  font-weight: 800;
+}
+
+.entry-action-cell {
+  min-width: 12rem;
+}
+
+.entry-action-cell .tool-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.entry-action-cell small {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+  color: #875204;
+  font-size: 0.67rem;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.entry-action-cell small.inconsistent {
+  color: #b13b18;
+}
+
 @media (max-width: 1080px) {
   .topbar {
     flex-direction: column;
@@ -2485,6 +2620,14 @@ tbody tr:hover {
 
   .valuation-top-products ol {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .entry-valuations-heading {
+    flex-direction: column;
+  }
+
+  .entry-valuations-counters {
+    justify-content: flex-start;
   }
 
   .valuation-filter {
@@ -2544,7 +2687,7 @@ tbody tr:hover {
 
   .valuation-tabs {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
   }
 
@@ -2592,6 +2735,19 @@ tbody tr:hover {
   .valuation-general-table {
     width: 100%;
     min-width: 0;
+  }
+
+  .entry-valuations-table .entry-value-input-cell input,
+  .entry-action-cell .tool-button {
+    justify-self: end;
+    width: min(100%, 12rem);
+  }
+
+  .entry-action-cell small {
+    grid-column: 2;
+    justify-self: end;
+    max-width: 15rem;
+    text-align: left;
   }
 
   .valuation-general-table thead {

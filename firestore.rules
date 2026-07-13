@@ -47,14 +47,27 @@ service cloud.firestore {
       ]);
     }
 
-    function isValidInventoryValuation() {
+    function isValidInventoryValuation(valoracionId) {
       return request.resource.data.keys().hasOnly([
           "valor_unitario",
           "modulo",
           "codigo",
           "descripcion",
           "actualizado_por",
-          "actualizado_en"
+          "actualizado_por_uid",
+          "actualizado_en",
+          "origen_actualizacion",
+          "ultimo_movimiento_id"
+        ])
+        && request.resource.data.keys().hasAll([
+          "valor_unitario",
+          "modulo",
+          "codigo",
+          "descripcion",
+          "actualizado_por",
+          "actualizado_por_uid",
+          "actualizado_en",
+          "origen_actualizacion"
         ])
         && request.resource.data.valor_unitario is number
         && request.resource.data.valor_unitario >= 0
@@ -62,7 +75,204 @@ service cloud.firestore {
         && request.resource.data.codigo is string
         && request.resource.data.descripcion is string
         && request.resource.data.actualizado_por is string
-        && request.resource.data.actualizado_en is timestamp;
+        && request.resource.data.actualizado_por_uid == request.auth.uid
+        && request.resource.data.actualizado_en == request.time
+        && request.resource.data.origen_actualizacion in ["manual", "entrada_stock"]
+        && (
+          request.resource.data.origen_actualizacion == "manual"
+          || (
+            request.resource.data.keys().hasAll(["ultimo_movimiento_id"])
+            && request.resource.data.ultimo_movimiento_id is string
+            && request.resource.data.ultimo_movimiento_id.size() > 0
+            && existsAfter(
+              /databases/$(database)/documents/valoraciones_entradas/$(request.resource.data.ultimo_movimiento_id)
+            )
+            && getAfter(
+              /databases/$(database)/documents/valoraciones_entradas/$(request.resource.data.ultimo_movimiento_id)
+            ).data.valoracion_id == valoracionId
+            && getAfter(
+              /databases/$(database)/documents/valoraciones_entradas/$(request.resource.data.ultimo_movimiento_id)
+            ).data.promedio_nuevo == request.resource.data.valor_unitario
+            && getAfter(
+              /databases/$(database)/documents/valoraciones_entradas/$(request.resource.data.ultimo_movimiento_id)
+            ).data.usuario_uid == request.auth.uid
+          )
+        );
+    }
+
+    function isMappedInventoryValuation(valoracionId, modulo) {
+      return (
+          modulo == "ASEO"
+          && valoracionId.matches("^productos_aseo__.+$")
+        )
+        || (
+          (modulo == "Taller" || modulo.matches(".*[Hh]erramienta.*"))
+          && valoracionId.matches("^herramientas__.+$")
+        )
+        || (
+          modulo != "ASEO"
+          && modulo != "Taller"
+          && !modulo.matches(".*[Hh]erramienta.*")
+          && valoracionId.matches("^existencias__.+$")
+        );
+    }
+
+    function isExcludedEntryMovement(data) {
+      return (
+          data.keys().hasAny(["tipoMovimiento"])
+          && data.tipoMovimiento is string
+          && data.tipoMovimiento.matches(".*([Ss]alida|[Dd]evoluci[oó]n|[Rr]etorno|[Tt]raslado).*")
+        )
+        || (
+          data.keys().hasAny(["tipo"])
+          && data.tipo is string
+          && data.tipo.matches(".*([Ss]alida|[Dd]evoluci[oó]n|[Rr]etorno|[Tt]raslado).*")
+        )
+        || (
+          data.keys().hasAny(["clase"])
+          && data.clase is string
+          && data.clase.matches(".*([Ss]alida|[Dd]evoluci[oó]n|[Rr]etorno|[Tt]raslado).*")
+        )
+        || (data.keys().hasAny(["es_devolucion"]) && data.es_devolucion == true)
+        || (data.keys().hasAny(["es_retorno"]) && data.es_retorno == true)
+        || (data.keys().hasAny(["es_traslado"]) && data.es_traslado == true)
+        || (
+          data.keys().hasAny(["movimiento_entre_ubicaciones"])
+          && data.movimiento_entre_ubicaciones == true
+        )
+        || (
+          data.keys().hasAll(["ubicacion_origen", "ubicacion_destino"])
+          && data.ubicacion_origen is string
+          && data.ubicacion_origen.size() > 0
+          && data.ubicacion_destino is string
+          && data.ubicacion_destino.size() > 0
+        );
+    }
+
+    function isValidEntryValuation(movimientoId) {
+      let movementPath = /databases/$(database)/documents/movimientos/$(movimientoId);
+      let movement = get(movementPath);
+      let inventoryPath = /databases/$(database)/documents/valoraciones_inventario/$(request.resource.data.valoracion_id);
+      let inventoryBefore = get(inventoryPath);
+      let inventoryAfter = getAfter(inventoryPath);
+      let expectedAverage = request.resource.data.stock_anterior == 0
+        ? request.resource.data.valor_unitario_entrada
+        : (
+          (request.resource.data.stock_anterior * request.resource.data.promedio_anterior)
+          + (request.resource.data.cantidad * request.resource.data.valor_unitario_entrada)
+        ) / request.resource.data.stock_nuevo;
+
+      return request.resource.data.keys().hasOnly([
+          "movimiento_id",
+          "producto_id",
+          "valoracion_id",
+          "modulo",
+          "codigo",
+          "producto",
+          "referencia",
+          "cantidad",
+          "stock_anterior",
+          "stock_nuevo",
+          "valor_unitario_entrada",
+          "promedio_anterior",
+          "promedio_nuevo",
+          "usuario",
+          "usuario_uid",
+          "movimiento_creado_en",
+          "valorado_en"
+        ])
+        && request.resource.data.keys().hasAll([
+          "movimiento_id",
+          "producto_id",
+          "valoracion_id",
+          "modulo",
+          "codigo",
+          "producto",
+          "referencia",
+          "cantidad",
+          "stock_anterior",
+          "stock_nuevo",
+          "valor_unitario_entrada",
+          "promedio_anterior",
+          "promedio_nuevo",
+          "usuario",
+          "usuario_uid",
+          "movimiento_creado_en",
+          "valorado_en"
+        ])
+        && request.resource.data.movimiento_id == movimientoId
+        && request.resource.data.producto_id is string
+        && request.resource.data.producto_id.size() > 0
+        && request.resource.data.valoracion_id is string
+        && request.resource.data.modulo is string
+        && request.resource.data.modulo.size() > 0
+        && request.resource.data.codigo is string
+        && request.resource.data.producto is string
+        && request.resource.data.producto.size() > 0
+        && request.resource.data.referencia is string
+        && request.resource.data.cantidad is number
+        && request.resource.data.cantidad > 0
+        && request.resource.data.stock_anterior is number
+        && request.resource.data.stock_anterior >= 0
+        && request.resource.data.stock_nuevo is number
+        && request.resource.data.stock_nuevo > 0
+        && request.resource.data.valor_unitario_entrada is number
+        && request.resource.data.valor_unitario_entrada >= 0
+        && request.resource.data.promedio_anterior is number
+        && request.resource.data.promedio_anterior >= 0
+        && request.resource.data.promedio_nuevo is number
+        && request.resource.data.promedio_nuevo >= 0
+        && request.resource.data.usuario is string
+        && request.resource.data.usuario.size() > 0
+        && request.resource.data.usuario_uid == request.auth.uid
+        && request.resource.data.movimiento_creado_en is timestamp
+        && request.resource.data.valorado_en == request.time
+        && exists(movementPath)
+        && movement.data.keys().hasAll([
+          "clase_movimiento",
+          "stock_actualizado",
+          "producto_id",
+          "stock_anterior",
+          "stock_nuevo",
+          "creado_en",
+          "modulo"
+        ])
+        && movement.data.clase_movimiento == "entrada_stock"
+        && !isExcludedEntryMovement(movement.data)
+        && movement.data.stock_actualizado == true
+        && movement.data.producto_id == request.resource.data.producto_id
+        && movement.data.stock_anterior == request.resource.data.stock_anterior
+        && movement.data.stock_nuevo == request.resource.data.stock_nuevo
+        && movement.data.creado_en == request.resource.data.movimiento_creado_en
+        && movement.data.modulo == request.resource.data.modulo
+        && isMappedInventoryValuation(
+          request.resource.data.valoracion_id,
+          request.resource.data.modulo
+        )
+        && request.resource.data.stock_nuevo
+          >= request.resource.data.stock_anterior + request.resource.data.cantidad - 0.000001
+        && request.resource.data.stock_nuevo
+          <= request.resource.data.stock_anterior + request.resource.data.cantidad + 0.000001
+        && (
+          (
+            request.resource.data.stock_anterior == 0
+            && request.resource.data.promedio_anterior == 0
+          )
+          || (
+            request.resource.data.stock_anterior > 0
+            && exists(inventoryPath)
+            && inventoryBefore.data.valor_unitario is number
+            && inventoryBefore.data.valor_unitario == request.resource.data.promedio_anterior
+          )
+        )
+        && request.resource.data.promedio_nuevo >= expectedAverage - 0.000001
+        && request.resource.data.promedio_nuevo <= expectedAverage + 0.000001
+        && existsAfter(inventoryPath)
+        && inventoryAfter.data.valor_unitario == request.resource.data.promedio_nuevo
+        && inventoryAfter.data.actualizado_por_uid == request.auth.uid
+        && inventoryAfter.data.actualizado_en == request.time
+        && inventoryAfter.data.origen_actualizacion == "entrada_stock"
+        && inventoryAfter.data.ultimo_movimiento_id == movimientoId;
     }
 
     function isValidMonthlyValuationClose(periodo) {
@@ -305,7 +515,14 @@ service cloud.firestore {
 
     match /valoraciones_inventario/{valoracionId} {
       allow read: if isActiveUser();
-      allow create, update: if isActiveUser() && isValidInventoryValuation();
+      allow create, update: if isActiveUser() && isValidInventoryValuation(valoracionId);
+    }
+
+    match /valoraciones_entradas/{movimientoId} {
+      allow read: if isActiveUser();
+      allow create: if isActiveUser()
+        && !exists(/databases/$(database)/documents/valoraciones_entradas/$(movimientoId))
+        && isValidEntryValuation(movimientoId);
     }
 
     match /cierres_valoracion_inventario/{periodo} {

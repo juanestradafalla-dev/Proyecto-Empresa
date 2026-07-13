@@ -28,8 +28,9 @@ import type {
   MonthlyValuationSummary,
   ValuationFilter,
 } from '../valuation/models';
+import PendingEntryValuations from './PendingEntryValuations';
 
-type ValuationTab = 'current' | 'history';
+type ValuationTab = 'current' | 'entries' | 'history';
 type MonthlySaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 function formatCurrency(value: number) {
@@ -611,6 +612,8 @@ export default function InventoryValuationModule({
   online,
   loading,
   user,
+  currentAverages,
+  currentValuationIds,
   onEdit,
 }: {
   rows: CurrentValuationRow[];
@@ -618,6 +621,8 @@ export default function InventoryValuationModule({
   online: boolean;
   loading: boolean;
   user: User;
+  currentAverages: Record<string, number>;
+  currentValuationIds: ReadonlySet<string>;
   onEdit: (valuationId: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<ValuationTab>('current');
@@ -626,10 +631,18 @@ export default function InventoryValuationModule({
     <section className="valuation-dashboard" aria-label="Valoración del inventario">
       <div className="valuation-tabs" role="tablist" aria-label="Vistas de valoración">
         <button type="button" role="tab" aria-selected={activeTab === 'current'} className={activeTab === 'current' ? 'active' : ''} onClick={() => setActiveTab('current')}>Valor actual</button>
+        <button type="button" role="tab" aria-selected={activeTab === 'entries'} className={activeTab === 'entries' ? 'active' : ''} onClick={() => setActiveTab('entries')}>Entradas por valorar</button>
         <button type="button" role="tab" aria-selected={activeTab === 'history'} className={activeTab === 'history' ? 'active' : ''} onClick={() => setActiveTab('history')}>Histórico mensual</button>
       </div>
       {activeTab === 'current' ? (
         <CurrentValuationView rows={rows} moduleOptions={moduleOptions} online={online} loading={loading} user={user} onEdit={onEdit} />
+      ) : activeTab === 'entries' ? (
+        <PendingEntryValuations
+          online={online}
+          user={user}
+          currentAverages={currentAverages}
+          currentValuationIds={currentValuationIds}
+        />
       ) : (
         <HistoricalValuationView />
       )}

@@ -982,6 +982,7 @@ function AppShell({ user }: { user: User }) {
   const [movements, setMovements] = useState<Movement[]>(() => cachedPanelData?.movements ?? []);
   const [users, setUsers] = useState<Record<string, UserProfile>>(() => cachedPanelData?.users ?? {});
   const [valuations, setValuations] = useState<Record<string, number>>({});
+  const [valuationDocumentIds, setValuationDocumentIds] = useState<Set<string>>(() => new Set());
   const [valuationDrafts, setValuationDrafts] = useState<Record<string, string>>({});
   const [valuationSaveStates, setValuationSaveStates] = useState<Record<string, ValuationSaveState>>({});
   const [valuationEditItem, setValuationEditItem] = useState<InventoryItem | null>(null);
@@ -1095,6 +1096,7 @@ function AppShell({ user }: { user: User }) {
           return [valuationDoc.id, Math.max(value, 0)];
         });
         setValuations(Object.fromEntries(entries));
+        setValuationDocumentIds(new Set(snapshot.docs.map((valuationDoc) => valuationDoc.id)));
       },
       () => setError('No pude leer la valoración del inventario. Verifica permisos en Firebase.'),
     );
@@ -1241,7 +1243,9 @@ function AppShell({ user }: { user: User }) {
         codigo: item.codigo,
         descripcion: item.descripcion,
         actualizado_por: user.email || user.uid,
+        actualizado_por_uid: user.uid,
         actualizado_en: serverTimestamp(),
+        origen_actualizacion: 'manual',
       }, { merge: true });
       setValuations((prev) => ({ ...prev, [item.valuationId]: unitValue }));
       resetValuationDraft(item);
@@ -1668,6 +1672,8 @@ function AppShell({ user }: { user: User }) {
             online={online}
             loading={loading}
             user={user}
+            currentAverages={valuations}
+            currentValuationIds={valuationDocumentIds}
             onEdit={(valuationId) => {
               const item = valuationInventory.find((entry) => entry.valuationId === valuationId);
               if (item) openValuationModal(item);
