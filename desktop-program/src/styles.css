@@ -538,6 +538,12 @@ h2 {
   box-shadow: 0 0 0 3px rgba(197, 138, 8, 0.16);
 }
 
+.sync-status.syncing .sync-dot {
+  background: #3879a8;
+  box-shadow: 0 0 0 3px rgba(56, 121, 168, 0.16);
+  animation: sync-pulse 1.2s ease-in-out infinite;
+}
+
 .sync-status.offline .sync-dot {
   background: #a12a1d;
   box-shadow: 0 0 0 3px rgba(161, 42, 29, 0.14);
@@ -1267,6 +1273,30 @@ h2 {
   white-space: nowrap;
 }
 
+.valuation-close-blockers {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #e8c477;
+  border-radius: 10px;
+  color: #764804;
+  background: #fff9eb;
+  font-size: 0.8rem;
+}
+
+.valuation-close-blockers > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.valuation-close-blockers ul {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
 .valuation-save-progress {
   display: grid;
   gap: 7px;
@@ -1332,6 +1362,40 @@ h2 {
 
 .valuation-close-confirmation small {
   color: var(--muted);
+}
+
+.valuation-close-time {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.valuation-close-typed-confirmation {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 470px);
+  margin-top: 8px;
+  text-align: left;
+}
+
+.valuation-close-typed-confirmation span {
+  color: #764804;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.valuation-close-typed-confirmation input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d7b765;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.valuation-close-typed-confirmation input:focus {
+  border-color: var(--warning);
+  outline: 2px solid rgba(197, 138, 8, 0.14);
 }
 
 .valuation-close-actions {
@@ -2821,6 +2885,16 @@ tbody tr:hover {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes sync-pulse {
+  0%, 100% {
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 1;
   }
 }
 

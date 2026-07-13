@@ -16,9 +16,12 @@ import { filterCurrentValuationRows, summarizeCurrentValuation } from '../valuat
 import {
   currentValuationPeriod,
   DuplicateMonthlyCloseError,
+  EarlyMonthlyCloseConfirmationError,
   formatValuationPeriod,
   loadMonthlyValuationItems,
   MonthlyCloseInProgressError,
+  MonthlyCloseRetryNotAllowedError,
+  MonthlyCloseVerificationError,
   saveMonthlyValuationClose,
   subscribeMonthlyValuationSummaries,
 } from '../valuation/monthlyValuation';
@@ -28,6 +31,17 @@ import type {
   MonthlyValuationSummary,
   ValuationFilter,
 } from '../valuation/models';
+import type { EntryStockMovement, EntryValuationRecord } from '../valuation/entryValuation';
+import {
+  EMPTY_FIRESTORE_SOURCE_STATE,
+  stateFromSnapshot,
+  type FirestoreSourceStates,
+} from '../valuation/firestoreSync';
+import {
+  evaluateMonthlyCloseEligibility,
+  formatBogotaDateTime,
+  isEarlyCloseConfirmationValid,
+} from '../valuation/monthlyCloseSafety';
 import PendingEntryValuations from './PendingEntryValuations';
 
 type ValuationTab = 'current' | 'entries' | 'history';
@@ -157,15 +171,25 @@ function MonthlyCloseConfirmation({
   period,
   productCount,
   totalValue,
+  cutoffAt,
+  requiresTypedConfirmation,
+  confirmationText,
   onCancel,
   onConfirm,
 }: {
   period: string;
   productCount: number;
   totalValue: number;
+  cutoffAt: Date;
+  requiresTypedConfirmation: boolean;
+  confirmationText: string;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (earlyConfirmation: string) => void;
 }) {
+  const [typedConfirmation, setTypedConfirmation] = useState('');
+  const confirmationValid = !requiresTypedConfirmation
+    || isEarlyCloseConfirmationValid(typedConfirmation, confirmationText);
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onCancel}>
       <section
@@ -185,11 +209,24 @@ function MonthlyCloseConfirmation({
         <div className="valuation-close-confirmation">
           <AlertTriangle size={28} />
           <p>Se guardará una fotografía permanente de <strong>{formatNumber(productCount)} productos</strong> por un total de <strong>{formatCurrency(totalValue)}</strong>.</p>
+          <p className="valuation-close-time"><strong>Fecha y hora previstas:</strong> {formatBogotaDateTime(cutoffAt)}</p>
           <small>Después de completarse no se podrá crear otro corte para el mismo periodo.</small>
+          {requiresTypedConfirmation && (
+            <label className="valuation-close-typed-confirmation">
+              <span>El mes todavía no ha terminado. Escribe <strong>{confirmationText}</strong> para continuar:</span>
+              <input
+                value={typedConfirmation}
+                onChange={(event) => setTypedConfirmation(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={confirmationText}
+              />
+            </label>
+          )}
         </div>
         <footer className="valuation-modal-actions valuation-close-actions">
           <button type="button" onClick={onCancel}>Cancelar</button>
-          <button className="tool-button" type="button" onClick={onConfirm}><Save size={16} /> Confirmar corte</button>
+          <button className="tool-button" type="button" disabled={!confirmationValid} onClick={() => onConfirm(typedConfirmation)}><Save size={16} /> Confirmar corte</button>
         </footer>
       </section>
     </div>
@@ -202,6 +239,9 @@ function CurrentValuationView({
   online,
   loading,
   user,
+  firestoreSources,
+  pendingEntryCount,
+  inconsistentEntryCount,
   onEdit,
 }: {
   rows: CurrentValuationRow[];
@@ -209,47 +249,98 @@ function CurrentValuationView({
   online: boolean;
   loading: boolean;
   user: User;
+  firestoreSources: FirestoreSourceStates;
+  pendingEntryCount: number;
+  inconsistentEntryCount: number;
   onEdit: (valuationId: string) => void;
 }) {
   const [search, setSearch] = useState('');
   const [moduleFilter, setModuleFilter] = useState('all');
   const [valueFilter, setValueFilter] = useState<ValuationFilter>('all');
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [confirmationCutoffAt, setConfirmationCutoffAt] = useState<Date | null>(null);
   const [saveState, setSaveState] = useState<MonthlySaveState>('idle');
   const [saveMessage, setSaveMessage] = useState('');
   const [saveProgress, setSaveProgress] = useState({ completed: 0, total: 1 });
   const [savedPeriods, setSavedPeriods] = useState<MonthlyValuationSummary[]>([]);
+  const [closesSource, setClosesSource] = useState({ ...EMPTY_FIRESTORE_SOURCE_STATE });
   const period = currentValuationPeriod();
   const summary = useMemo(() => summarizeCurrentValuation(rows, moduleOptions), [moduleOptions, rows]);
   const filteredRows = useMemo(
     () => filterCurrentValuationRows(rows, search, moduleFilter, valueFilter),
     [moduleFilter, rows, search, valueFilter],
   );
-  const periodAlreadySaved = savedPeriods.some((entry) => entry.period === period);
+  const existingClose = savedPeriods.find((entry) => entry.period === period) ?? null;
+  const eligibility = evaluateMonthlyCloseEligibility({
+    period,
+    now: new Date(),
+    online,
+    sources: firestoreSources,
+    closesSource,
+    rows,
+    pendingEntryCount,
+    inconsistentEntryCount,
+    existingCloseStatus: existingClose?.status ?? null,
+    existingCloseCreatorUid: existingClose?.createdByUid ?? '',
+    userUid: user.uid,
+  });
 
-  useEffect(() => subscribeMonthlyValuationSummaries(setSavedPeriods, (error) => {
-    console.error('No se pudieron consultar los cierres mensuales:', error);
-  }), []);
+  useEffect(() => subscribeMonthlyValuationSummaries(
+    setSavedPeriods,
+    (error) => {
+      console.error('No se pudieron consultar los cierres mensuales:', error);
+      setClosesSource((current) => ({
+        ...current,
+        error: 'No se pudieron consultar los cierres mensuales.',
+      }));
+    },
+    {
+      includeIncomplete: true,
+      onMetadata: (metadata) => setClosesSource(stateFromSnapshot(metadata)),
+    },
+  ), []);
 
-  async function confirmMonthlyClose() {
+  async function confirmMonthlyClose(earlyConfirmation: string) {
+    const latestEligibility = evaluateMonthlyCloseEligibility({
+      period,
+      now: new Date(),
+      online,
+      sources: firestoreSources,
+      closesSource,
+      rows,
+      pendingEntryCount,
+      inconsistentEntryCount,
+      existingCloseStatus: existingClose?.status ?? null,
+      existingCloseCreatorUid: existingClose?.createdByUid ?? '',
+      userUid: user.uid,
+    });
+    if (!latestEligibility.eligible) {
+      setConfirmationOpen(false);
+      setSaveState('error');
+      setSaveMessage(latestEligibility.reasons[0] ?? 'El cierre ya no es elegible.');
+      return;
+    }
     setConfirmationOpen(false);
     setSaveState('saving');
     setSaveMessage('Preparando corte mensual...');
     setSaveProgress({ completed: 0, total: 1 });
 
     try {
-      await saveMonthlyValuationClose({
+      const result = await saveMonthlyValuationClose({
         period,
         rows,
         moduleOptions,
         user,
+        earlyConfirmation,
         onProgress: (completed, total) => {
           setSaveProgress({ completed, total });
           setSaveMessage(completed === total ? 'Corte mensual guardado.' : `Guardando paso ${completed} de ${total}...`);
         },
       });
       setSaveState('saved');
-      setSaveMessage(`Corte de ${formatValuationPeriod(period)} guardado correctamente.`);
+      setSaveMessage(result.completedAt
+        ? `Corte completado exactamente el ${formatBogotaDateTime(result.completedAt)}.`
+        : `Corte de ${formatValuationPeriod(period)} guardado correctamente.`);
     } catch (error) {
       console.error('No se pudo guardar el corte mensual:', error);
       setSaveState('error');
@@ -257,6 +348,12 @@ function CurrentValuationView({
         setSaveMessage('Ya existe un corte completo para este mes. No se creó un duplicado.');
       } else if (error instanceof MonthlyCloseInProgressError) {
         setSaveMessage('Ya hay un guardado en curso para este mes. Espera a que termine.');
+      } else if (error instanceof MonthlyCloseRetryNotAllowedError) {
+        setSaveMessage('Solo el creador puede reintentar este cierre fallido.');
+      } else if (error instanceof MonthlyCloseVerificationError) {
+        setSaveMessage('La verificación final no coincidió. El corte quedó en estado error y puede reintentarse.');
+      } else if (error instanceof EarlyMonthlyCloseConfirmationError) {
+        setSaveMessage(error.message);
       } else {
         setSaveMessage('No se pudo completar el corte. Verifica la conexión y los permisos de Firestore.');
       }
@@ -290,14 +387,33 @@ function CurrentValuationView({
         <button
           className="tool-button valuation-close-button"
           type="button"
-          disabled={!online || loading || rows.length === 0 || saveState === 'saving' || periodAlreadySaved}
-          onClick={() => setConfirmationOpen(true)}
-          title={periodAlreadySaved ? 'El corte de este mes ya está guardado' : 'Guardar fotografía mensual del inventario'}
+          disabled={!eligibility.eligible || saveState === 'saving'}
+          onClick={() => {
+            setConfirmationCutoffAt(new Date());
+            setConfirmationOpen(true);
+          }}
+          title={eligibility.reasons[0] ?? 'Guardar fotografía mensual del inventario'}
         >
-          {periodAlreadySaved ? <Check size={17} /> : <Save size={17} />}
-          {periodAlreadySaved ? 'Corte del mes guardado' : 'Guardar corte del mes'}
+          {existingClose?.status === 'completo' ? <Check size={17} /> : <Save size={17} />}
+          {existingClose?.status === 'completo'
+            ? 'Corte del mes guardado'
+            : existingClose?.status === 'error'
+              ? 'Reintentar corte del mes'
+              : existingClose?.status === 'guardando'
+                ? 'Corte en proceso'
+                : 'Guardar corte del mes'}
         </button>
       </div>
+
+      {!eligibility.eligible && saveState !== 'saving' && (
+        <div className="valuation-close-blockers" role="status">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>El cierre mensual está bloqueado</strong>
+            <ul>{eligibility.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+          </div>
+        </div>
+      )}
 
       {(saveState === 'saving' || saveMessage) && (
         <div className={`valuation-save-progress ${saveState}`} role="status">
@@ -421,13 +537,16 @@ function CurrentValuationView({
         </div>
       </article>
 
-      {confirmationOpen && (
+      {confirmationOpen && confirmationCutoffAt && (
         <MonthlyCloseConfirmation
           period={period}
           productCount={summary.productCount}
           totalValue={summary.inventoryGrandTotal}
+          cutoffAt={confirmationCutoffAt}
+          requiresTypedConfirmation={eligibility.requiresEarlyConfirmation}
+          confirmationText={eligibility.confirmationText}
           onCancel={() => setConfirmationOpen(false)}
-          onConfirm={() => { void confirmMonthlyClose(); }}
+          onConfirm={(earlyConfirmation) => { void confirmMonthlyClose(earlyConfirmation); }}
         />
       )}
     </section>
@@ -531,7 +650,12 @@ function HistoricalValuationView() {
           <section className="valuation-history-summary-grid">
             <article className="valuation-summary-card total">
               <CircleDollarSign size={24} />
-              <div><span>Valor total del mes</span><strong>{formatCurrency(selectedSummary.totalValue)}</strong><small>{formatValuationPeriod(selectedSummary.period)}</small></div>
+              <div>
+                <span>Valor total del mes</span>
+                <strong>{formatCurrency(selectedSummary.totalValue)}</strong>
+                <small>{formatValuationPeriod(selectedSummary.period)}</small>
+                {selectedSummary.createdAt && <small>Corte exacto: {formatBogotaDateTime(selectedSummary.createdAt)}</small>}
+              </div>
             </article>
             <article className={`valuation-summary-card variation ${variationAmount !== null && variationAmount < 0 ? 'negative' : ''}`}>
               <CalendarDays size={24} />
@@ -614,6 +738,9 @@ export default function InventoryValuationModule({
   user,
   currentAverages,
   currentValuationIds,
+  firestoreSources,
+  entryStockMovements,
+  entryValuationRecords,
   onEdit,
 }: {
   rows: CurrentValuationRow[];
@@ -623,9 +750,22 @@ export default function InventoryValuationModule({
   user: User;
   currentAverages: Record<string, number>;
   currentValuationIds: ReadonlySet<string>;
+  firestoreSources: FirestoreSourceStates;
+  entryStockMovements: EntryStockMovement[];
+  entryValuationRecords: Record<string, EntryValuationRecord>;
   onEdit: (valuationId: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<ValuationTab>('current');
+  const pendingEntryCount = entryStockMovements.filter((entry) => !entryValuationRecords[entry.id]).length;
+  const inconsistentEntryCount = entryStockMovements.filter((entry) => Boolean(entry.validationIssue)).length;
+  const entryLoading = ['entryMovements', 'entryValuations'].some((key) => {
+    const state = firestoreSources[key as 'entryMovements' | 'entryValuations'];
+    return !state.received && !state.error;
+  });
+  const entryLoadError = [
+    firestoreSources.entryMovements.error,
+    firestoreSources.entryValuations.error,
+  ].filter(Boolean).join(' ');
 
   return (
     <section className="valuation-dashboard" aria-label="Valoración del inventario">
@@ -635,13 +775,27 @@ export default function InventoryValuationModule({
         <button type="button" role="tab" aria-selected={activeTab === 'history'} className={activeTab === 'history' ? 'active' : ''} onClick={() => setActiveTab('history')}>Histórico mensual</button>
       </div>
       {activeTab === 'current' ? (
-        <CurrentValuationView rows={rows} moduleOptions={moduleOptions} online={online} loading={loading} user={user} onEdit={onEdit} />
+        <CurrentValuationView
+          rows={rows}
+          moduleOptions={moduleOptions}
+          online={online}
+          loading={loading}
+          user={user}
+          firestoreSources={firestoreSources}
+          pendingEntryCount={pendingEntryCount}
+          inconsistentEntryCount={inconsistentEntryCount}
+          onEdit={onEdit}
+        />
       ) : activeTab === 'entries' ? (
         <PendingEntryValuations
           online={online}
           user={user}
           currentAverages={currentAverages}
           currentValuationIds={currentValuationIds}
+          entries={entryStockMovements}
+          records={entryValuationRecords}
+          loading={entryLoading}
+          loadError={entryLoadError}
         />
       ) : (
         <HistoricalValuationView />

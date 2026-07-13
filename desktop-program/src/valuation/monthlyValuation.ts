@@ -1,17 +1,28 @@
 import {
   collection,
   doc,
+  getDocFromServer,
   getDocs,
+  getDocsFromServer,
   onSnapshot,
   runTransaction,
   serverTimestamp,
   Timestamp,
-  updateDoc,
   writeBatch,
 } from 'firebase/firestore';
 import type { User } from 'firebase/auth';
 import { db } from '../firebase';
 import { summarizeCurrentValuation } from './currentValuation';
+import {
+  buildExpectedMonthlyCloseIntegrity,
+  verifyMonthlyCloseItems,
+} from './monthlyCloseIntegrity';
+import {
+  assertCurrentBogotaPeriod,
+  currentBogotaPeriod,
+  isEarlyCloseConfirmationValid,
+  isLastBogotaDayOfMonth,
+} from './monthlyCloseSafety';
 import type { CurrentValuationRow, MonthlyValuationItem, MonthlyValuationSummary } from './models';
 
 const MONTHLY_CLOSES_COLLECTION = 'cierres_valoracion_inventario';
@@ -23,6 +34,7 @@ export class DuplicateMonthlyCloseError extends Error {
     this.name = 'DuplicateMonthlyCloseError';
   }
 }
+
 export class MonthlyCloseInProgressError extends Error {
   constructor(period: string) {
     super(`El corte ${period} ya se está guardando.`);
@@ -30,23 +42,47 @@ export class MonthlyCloseInProgressError extends Error {
   }
 }
 
+export class MonthlyCloseRetryNotAllowedError extends Error {
+  constructor(period: string) {
+    super(`El corte fallido ${period} solo puede ser reintentado por su creador.`);
+    this.name = 'MonthlyCloseRetryNotAllowedError';
+  }
+}
+
+export class MonthlyCloseVerificationError extends Error {
+  constructor() {
+    super('La verificación final de IDs, cantidad de ítems y suma total no coincidió.');
+    this.name = 'MonthlyCloseVerificationError';
+  }
+}
+
+export class EarlyMonthlyCloseConfirmationError extends Error {
+  constructor(period: string) {
+    super(`Debes escribir CERRAR ${period} para cerrar antes del último día del mes.`);
+    this.name = 'EarlyMonthlyCloseConfirmationError';
+  }
+}
+
+export type MonthlySnapshotMetadata = {
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+};
+
 export function currentValuationPeriod(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  return `${year}-${month}`;
+  return currentBogotaPeriod(date);
 }
 
 export function formatValuationPeriod(period: string) {
   const [year, month] = period.split('-').map(Number);
   if (!year || !month) return period;
-  return new Intl.DateTimeFormat('es-CO', { month: 'long', year: 'numeric' })
-    .format(new Date(year, month - 1, 1));
+  return new Intl.DateTimeFormat('es-CO', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+    .format(new Date(Date.UTC(year, month - 1, 1)));
 }
 
-function chunkRows(rows: CurrentValuationRow[]) {
-  const chunks: CurrentValuationRow[][] = [];
-  for (let index = 0; index < rows.length; index += FIRESTORE_SAFE_BATCH_SIZE) {
-    chunks.push(rows.slice(index, index + FIRESTORE_SAFE_BATCH_SIZE));
+function chunkArray<T>(items: T[]) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += FIRESTORE_SAFE_BATCH_SIZE) {
+    chunks.push(items.slice(index, index + FIRESTORE_SAFE_BATCH_SIZE));
   }
   return chunks;
 }
@@ -74,6 +110,7 @@ function readMonthlySummary(period: string, data: Record<string, unknown>): Mont
     moduleTotals,
     createdAt: toDate(data.fecha),
     createdBy: typeof data.usuario === 'string' ? data.usuario : '',
+    createdByUid: typeof data.usuario_uid === 'string' ? data.usuario_uid : '',
     status,
   };
 }
@@ -81,15 +118,24 @@ function readMonthlySummary(period: string, data: Record<string, unknown>): Mont
 export function subscribeMonthlyValuationSummaries(
   onData: (summaries: MonthlyValuationSummary[]) => void,
   onError: (error: Error) => void,
+  options: {
+    includeIncomplete?: boolean;
+    onMetadata?: (metadata: MonthlySnapshotMetadata) => void;
+  } = {},
 ) {
   return onSnapshot(
     collection(db, MONTHLY_CLOSES_COLLECTION),
+    { includeMetadataChanges: true },
     (snapshot) => {
       const summaries = snapshot.docs
         .map((snapshotDoc) => readMonthlySummary(snapshotDoc.id, snapshotDoc.data()))
-        .filter((summary) => summary.status === 'completo')
+        .filter((summary) => options.includeIncomplete || summary.status === 'completo')
         .sort((left, right) => right.period.localeCompare(left.period));
       onData(summaries);
+      options.onMetadata?.({
+        fromCache: snapshot.metadata.fromCache,
+        hasPendingWrites: snapshot.metadata.hasPendingWrites,
+      });
     },
     (error) => onError(error),
   );
@@ -117,24 +163,72 @@ export async function loadMonthlyValuationItems(period: string): Promise<Monthly
   ));
 }
 
+function createAttemptId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function clearMonthlyCloseItems(period: string) {
+  const itemsRef = collection(db, MONTHLY_CLOSES_COLLECTION, period, 'items');
+  const snapshot = await getDocsFromServer(itemsRef);
+  for (const documents of chunkArray(snapshot.docs)) {
+    const batch = writeBatch(db);
+    documents.forEach((snapshotDoc) => batch.delete(snapshotDoc.ref));
+    await batch.commit();
+  }
+}
+
+async function markMonthlyCloseError(
+  period: string,
+  userUid: string,
+  attemptId: string,
+) {
+  const closeRef = doc(db, MONTHLY_CLOSES_COLLECTION, period);
+  await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(closeRef);
+    if (
+      snapshot.exists()
+      && snapshot.data().estado === 'guardando'
+      && snapshot.data().usuario_uid === userUid
+      && snapshot.data().intento_id === attemptId
+    ) {
+      transaction.update(closeRef, { estado: 'error' });
+    }
+  });
+}
+
 export async function saveMonthlyValuationClose({
   period,
   rows,
   moduleOptions,
   user,
+  earlyConfirmation,
   onProgress,
 }: {
   period: string;
   rows: CurrentValuationRow[];
   moduleOptions: string[];
   user: User;
+  earlyConfirmation: string;
   onProgress: (completedSteps: number, totalSteps: number) => void;
 }) {
+  const requestedAt = new Date();
+  assertCurrentBogotaPeriod(period, requestedAt);
+  if (
+    !isLastBogotaDayOfMonth(requestedAt)
+    && !isEarlyCloseConfirmationValid(earlyConfirmation, `CERRAR ${period}`)
+  ) {
+    throw new EarlyMonthlyCloseConfirmationError(period);
+  }
+  const integrity = buildExpectedMonthlyCloseIntegrity(rows);
   const summary = summarizeCurrentValuation(rows, moduleOptions);
-  const chunks = chunkRows(rows);
-  const totalSteps = chunks.length + 2;
+  const chunks = chunkArray(rows);
+  const totalSteps = chunks.length + 4;
   const closeRef = doc(db, MONTHLY_CLOSES_COLLECTION, period);
   const userLabel = user.email || user.displayName || user.uid;
+  const attemptId = createAttemptId();
   const summaryPayload = {
     valor_total: summary.inventoryGrandTotal,
     cantidad_productos: summary.productCount,
@@ -143,6 +237,8 @@ export async function saveMonthlyValuationClose({
     porcentaje_valorado: summary.valuedPercentage,
     totales_modulo: Object.fromEntries(summary.moduleTotals.map((entry) => [entry.moduleName, entry.total])),
   };
+  let claimed = false;
+  let completed = false;
 
   await runTransaction(db, async (transaction) => {
     const existing = await transaction.get(closeRef);
@@ -150,6 +246,9 @@ export async function saveMonthlyValuationClose({
       const status = existing.data().estado;
       if (status === 'completo') throw new DuplicateMonthlyCloseError(period);
       if (status === 'guardando') throw new MonthlyCloseInProgressError(period);
+      if (status !== 'error' || existing.data().usuario_uid !== user.uid) {
+        throw new MonthlyCloseRetryNotAllowedError(period);
+      }
     }
 
     transaction.set(closeRef, {
@@ -159,16 +258,29 @@ export async function saveMonthlyValuationClose({
       usuario: userLabel,
       usuario_uid: user.uid,
       estado: 'guardando',
+      intento_id: attemptId,
+      verificacion: {
+        cantidad_items: 0,
+        suma_total: 0,
+        ids_hash: '',
+        verificado: false,
+      },
     });
   });
+  claimed = true;
   onProgress(1, totalSteps);
 
   try {
+    await clearMonthlyCloseItems(period);
+    onProgress(2, totalSteps);
+
     for (let index = 0; index < chunks.length; index += 1) {
       const batch = writeBatch(db);
       chunks[index].forEach((row) => {
         const itemRef = doc(db, MONTHLY_CLOSES_COLLECTION, period, 'items', row.valuationId);
         batch.set(itemRef, {
+          item_id: row.valuationId,
+          intento_id: attemptId,
           modulo: row.moduleName,
           codigo: row.code,
           referencia: row.reference || 'N/A',
@@ -180,16 +292,68 @@ export async function saveMonthlyValuationClose({
         });
       });
       await batch.commit();
-      onProgress(index + 2, totalSteps);
+      onProgress(index + 3, totalSteps);
     }
 
-    await updateDoc(closeRef, { estado: 'completo' });
+    const storedSnapshot = await getDocsFromServer(
+      collection(db, MONTHLY_CLOSES_COLLECTION, period, 'items'),
+    );
+    const allItemsFromAttempt = storedSnapshot.docs.every(
+      (snapshotDoc) => snapshotDoc.data().intento_id === attemptId,
+    );
+    const verification = verifyMonthlyCloseItems(
+      integrity,
+      storedSnapshot.docs.map((snapshotDoc) => ({
+        id: snapshotDoc.id,
+        totalValue: Number(snapshotDoc.data().valor_total),
+      })),
+    );
+    if (!allItemsFromAttempt || !verification.valid) throw new MonthlyCloseVerificationError();
+    onProgress(chunks.length + 3, totalSteps);
+
+    await runTransaction(db, async (transaction) => {
+      const current = await transaction.get(closeRef);
+      if (
+        !current.exists()
+        || current.data().estado !== 'guardando'
+        || current.data().usuario_uid !== user.uid
+        || current.data().intento_id !== attemptId
+      ) {
+        throw new MonthlyCloseInProgressError(period);
+      }
+      transaction.update(closeRef, {
+        estado: 'completo',
+        fecha: serverTimestamp(),
+        verificacion: {
+          cantidad_items: verification.actual.itemCount,
+          suma_total: verification.actual.totalValue,
+          ids_hash: verification.actual.idsHash,
+          verificado: true,
+        },
+      });
+    });
+    completed = true;
     onProgress(totalSteps, totalSteps);
-  } catch (error) {
+
+    let completedAt: Date | null = null;
     try {
-      await updateDoc(closeRef, { estado: 'error' });
-    } catch (statusError) {
-      console.error('No se pudo marcar el corte mensual como fallido:', statusError);
+      const completedSnapshot = await getDocFromServer(closeRef);
+      completedAt = toDate(completedSnapshot.data()?.fecha);
+    } catch (readError) {
+      console.error('El corte se completó, pero no se pudo releer su fecha del servidor:', readError);
+    }
+    return {
+      completedAt,
+      itemCount: verification.actual.itemCount,
+      totalValue: verification.actual.totalValue,
+    };
+  } catch (error) {
+    if (claimed && !completed) {
+      try {
+        await markMonthlyCloseError(period, user.uid, attemptId);
+      } catch (statusError) {
+        console.error('No se pudo marcar el corte mensual como fallido:', statusError);
+      }
     }
     throw error;
   }

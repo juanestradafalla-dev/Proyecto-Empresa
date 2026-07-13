@@ -282,7 +282,9 @@ service cloud.firestore {
           "fecha",
           "usuario",
           "usuario_uid",
-          "estado"
+          "estado",
+          "intento_id",
+          "verificacion"
         ])
         && periodo.matches("^[0-9]{4}-(0[1-9]|1[0-2])$")
         && request.resource.data.periodo == periodo
@@ -314,11 +316,47 @@ service cloud.firestore {
         && request.resource.data.usuario is string
         && request.resource.data.usuario.size() > 0
         && request.resource.data.usuario_uid == request.auth.uid
-        && request.resource.data.estado in ["guardando", "completo", "error"];
+        && request.resource.data.estado in ["guardando", "completo", "error"]
+        && request.resource.data.intento_id is string
+        && request.resource.data.intento_id.size() > 0
+        && request.resource.data.verificacion is map
+        && request.resource.data.verificacion.keys().hasOnly([
+          "cantidad_items",
+          "suma_total",
+          "ids_hash",
+          "verificado"
+        ])
+        && request.resource.data.verificacion.cantidad_items is int
+        && request.resource.data.verificacion.cantidad_items >= 0
+        && request.resource.data.verificacion.suma_total is number
+        && request.resource.data.verificacion.suma_total >= 0
+        && request.resource.data.verificacion.ids_hash is string
+        && request.resource.data.verificacion.verificado is bool
+        && (
+          (
+            request.resource.data.estado == "completo"
+            && request.resource.data.verificacion.verificado == true
+            && request.resource.data.verificacion.cantidad_items
+              == request.resource.data.resumen.cantidad_productos
+            && request.resource.data.verificacion.suma_total
+              >= request.resource.data.resumen.valor_total
+                - (request.resource.data.resumen.valor_total + 1) * 0.000001
+            && request.resource.data.verificacion.suma_total
+              <= request.resource.data.resumen.valor_total
+                + (request.resource.data.resumen.valor_total + 1) * 0.000001
+            && request.resource.data.verificacion.ids_hash.size() > 0
+          )
+          || (
+            request.resource.data.estado in ["guardando", "error"]
+            && request.resource.data.verificacion.verificado == false
+          )
+        );
     }
 
-    function isValidMonthlyValuationItem() {
+    function isValidMonthlyValuationItem(itemId, intentoId) {
       return request.resource.data.keys().hasOnly([
+          "item_id",
+          "intento_id",
           "modulo",
           "codigo",
           "referencia",
@@ -328,6 +366,8 @@ service cloud.firestore {
           "valor_unitario",
           "valor_total"
         ])
+        && request.resource.data.item_id == itemId
+        && request.resource.data.intento_id == intentoId
         && request.resource.data.modulo is string
         && request.resource.data.modulo.size() > 0
         && request.resource.data.codigo is string
@@ -341,7 +381,13 @@ service cloud.firestore {
         && request.resource.data.valor_unitario is number
         && request.resource.data.valor_unitario >= 0
         && request.resource.data.valor_total is number
-        && request.resource.data.valor_total >= 0;
+        && request.resource.data.valor_total >= 0
+        && request.resource.data.valor_total
+          >= request.resource.data.cantidad * request.resource.data.valor_unitario
+            - (request.resource.data.valor_total + 1) * 0.000001
+        && request.resource.data.valor_total
+          <= request.resource.data.cantidad * request.resource.data.valor_unitario
+            + (request.resource.data.valor_total + 1) * 0.000001;
     }
 
     function isSharedBusinessCollection(collectionName) {
@@ -530,22 +576,48 @@ service cloud.firestore {
       allow create: if isActiveUser()
         && !exists(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo))
         && request.resource.data.estado == "guardando"
+        && request.resource.data.fecha == request.time
         && isValidMonthlyValuationClose(periodo);
       allow update: if isActiveUser()
-        && resource.data.estado in ["guardando", "error"]
-        && (
-          (resource.data.estado == "guardando" && request.resource.data.estado in ["completo", "error"])
-          || (resource.data.estado == "error" && request.resource.data.estado == "guardando")
-        )
-        && request.resource.data.periodo == resource.data.periodo
+        && resource.data.usuario_uid == request.auth.uid
         && request.resource.data.usuario_uid == resource.data.usuario_uid
+        && request.resource.data.periodo == resource.data.periodo
+        && (
+          (
+            resource.data.estado == "guardando"
+            && request.resource.data.estado == "error"
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["estado"])
+          )
+          || (
+            resource.data.estado == "guardando"
+            && request.resource.data.estado == "completo"
+            && request.resource.data.fecha == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              "estado",
+              "fecha",
+              "verificacion"
+            ])
+          )
+          || (
+            resource.data.estado == "error"
+            && request.resource.data.estado == "guardando"
+            && request.resource.data.fecha == request.time
+          )
+        )
         && isValidMonthlyValuationClose(periodo);
 
       match /items/{itemId} {
         allow read: if isActiveUser();
         allow create, update: if isActiveUser()
           && get(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo)).data.estado == "guardando"
-          && isValidMonthlyValuationItem();
+          && get(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo)).data.usuario_uid == request.auth.uid
+          && isValidMonthlyValuationItem(
+            itemId,
+            get(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo)).data.intento_id
+          );
+        allow delete: if isActiveUser()
+          && get(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo)).data.estado == "guardando"
+          && get(/databases/$(database)/documents/cierres_valoracion_inventario/$(periodo)).data.usuario_uid == request.auth.uid;
       }
     }
 
