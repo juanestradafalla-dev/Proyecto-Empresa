@@ -368,6 +368,7 @@ function crearHojaResumen(libro, hoja, payload, rutaLogo) {
     ['Módulo', payload.moduleName || ''],
     ['Alcance', payload.moduleName ? `Solo movimientos de ${payload.moduleName}` : 'Módulo seleccionado'],
     ['Periodo', payload.periodLabel || 'Histórico completo'],
+    ['Cobertura', payload.coverageLabel || 'Cobertura no informada'],
     ['Fecha de exportación', payload.exportDate || ''],
     ['Generado por', payload.generatedBy || ''],
   ];
@@ -493,9 +494,9 @@ async function generarReporteMovimientosExcel({ filePath, payload }) {
   const contextoModulo = {
     categoryLabel: modulo,
     summary: datos.summary || {},
-    movimientos: combinado.movimientos,
-    entradas: combinado.entradas,
-    salidas: combinado.salidas,
+    movimientos: Array.isArray(datos.movimientosGenerales) ? datos.movimientosGenerales : combinado.movimientos,
+    entradas: Array.isArray(datos.entradasGenerales) ? datos.entradasGenerales : combinado.entradas,
+    salidas: Array.isArray(datos.salidasGenerales) ? datos.salidasGenerales : combinado.salidas,
     consolidated: combinado.consolidated,
   };
 

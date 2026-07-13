@@ -100,8 +100,12 @@ export type ReporteMovimientosPayload = {
   periodLabel: string;
   exportDate: string;
   generatedBy: string;
+  coverageLabel: string;
   summary: ResumenReporte;
   categorias: HojaCategoriaReporte[];
+  movimientosGenerales: FilaMovimientoExcel[];
+  entradasGenerales: FilaMovimientoExcel[];
+  salidasGenerales: FilaMovimientoExcel[];
 };
 
 export type ExportarReporteResult = {
@@ -273,10 +277,11 @@ function filasConSaldos(
 ) {
   const saldos = new Map<string, number>();
   const ordenados = [...movimientos].sort(ordenarPorFechaAsc);
+  const filasPorMovimiento = new Map<string, FilaMovimientoExcel>();
 
   const contextoSubmodulo = categoria.moduleName === 'TALLER' ? (categoria.submodulo ?? '') : '';
 
-  return ordenados.map((movimiento) => {
+  ordenados.forEach((movimiento) => {
     const clave = claveProducto(movimiento, categoria);
     const saldoAnterior = saldos.get(clave) ?? 0;
     let saldoNuevo = saldoAnterior;
@@ -285,8 +290,15 @@ function filasConSaldos(
     else if (esSalida(movimiento, categoria.moduleName, contextoSubmodulo)) saldoNuevo = saldoAnterior - movimiento.cantidad;
 
     saldos.set(clave, saldoNuevo);
-    return crearFilaMovimiento(movimiento, categoria, saldoAnterior, saldoNuevo, usuarios);
+    filasPorMovimiento.set(
+      movimiento.id,
+      crearFilaMovimiento(movimiento, categoria, saldoAnterior, saldoNuevo, usuarios),
+    );
   });
+
+  return movimientos
+    .map((movimiento) => filasPorMovimiento.get(movimiento.id))
+    .filter((fila): fila is FilaMovimientoExcel => Boolean(fila));
 }
 
 function filasConsolidado(movimientos: MovimientoParaReporte[], categoria: CategoriaMovimiento) {
@@ -423,6 +435,7 @@ export function crearReporteMovimientos(opciones: {
   periodLabel: string;
   exportDate: string;
   generatedBy: string;
+  coverageLabel: string;
 }): ReporteMovimientosPayload {
   const grupos = agruparPorModuloSeleccionado(
     opciones.movimientos,
@@ -430,8 +443,13 @@ export function crearReporteMovimientos(opciones: {
     opciones.tallerSubmodulo ?? '',
   );
 
+  const filasPorMovimiento = new Map<string, FilaMovimientoExcel>();
   const categorias = nombresHojaUnicos(grupos.map(({ categoria, movimientos }) => {
     const filas = filasConSaldos(movimientos, categoria, opciones.usuarios);
+    movimientos.forEach((movimiento, index) => {
+      const fila = filas[index];
+      if (fila) filasPorMovimiento.set(movimiento.id, fila);
+    });
     const entradas = filas.filter((fila) => fila.cantidad_entrada > 0);
     const salidas = filas.filter((fila) => fila.cantidad_salida > 0);
     return {
@@ -465,6 +483,12 @@ export function crearReporteMovimientos(opciones: {
     },
   );
 
+  const movimientosGenerales = opciones.movimientos
+    .map((movimiento) => filasPorMovimiento.get(movimiento.id))
+    .filter((fila): fila is FilaMovimientoExcel => Boolean(fila));
+  const entradasGenerales = movimientosGenerales.filter((fila) => fila.cantidad_entrada > 0);
+  const salidasGenerales = movimientosGenerales.filter((fila) => fila.cantidad_salida > 0);
+
   return {
     companyName: 'ARLES S.A.S.',
     title: 'REPORTE DE MOVIMIENTOS DE INVENTARIO',
@@ -473,11 +497,15 @@ export function crearReporteMovimientos(opciones: {
     periodLabel: opciones.periodLabel,
     exportDate: opciones.exportDate,
     generatedBy: opciones.generatedBy,
+    coverageLabel: opciones.coverageLabel,
     summary: {
       ...resumenGlobal,
       total_categorias: categorias.length,
     },
     categorias,
+    movimientosGenerales,
+    entradasGenerales,
+    salidasGenerales,
   };
 }
 

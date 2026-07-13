@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { User } from 'firebase/auth';
 import {
   AlertTriangle,
@@ -18,12 +18,14 @@ import {
   DuplicateMonthlyCloseError,
   EarlyMonthlyCloseConfirmationError,
   formatValuationPeriod,
+  loadMonthlyValuationSummaryPage,
   loadMonthlyValuationItems,
+  mergeMonthlyValuationSummaryPages,
   MonthlyCloseInProgressError,
   MonthlyCloseRetryNotAllowedError,
   MonthlyCloseVerificationError,
   saveMonthlyValuationClose,
-  subscribeMonthlyValuationSummaries,
+  subscribeMonthlyValuationPeriod,
 } from '../valuation/monthlyValuation';
 import type {
   CurrentValuationRow,
@@ -262,7 +264,7 @@ function CurrentValuationView({
   const [saveState, setSaveState] = useState<MonthlySaveState>('idle');
   const [saveMessage, setSaveMessage] = useState('');
   const [saveProgress, setSaveProgress] = useState({ completed: 0, total: 1 });
-  const [savedPeriods, setSavedPeriods] = useState<MonthlyValuationSummary[]>([]);
+  const [existingClose, setExistingClose] = useState<MonthlyValuationSummary | null>(null);
   const [closesSource, setClosesSource] = useState({ ...EMPTY_FIRESTORE_SOURCE_STATE });
   const period = currentValuationPeriod();
   const summary = useMemo(() => summarizeCurrentValuation(rows, moduleOptions), [moduleOptions, rows]);
@@ -270,7 +272,6 @@ function CurrentValuationView({
     () => filterCurrentValuationRows(rows, search, moduleFilter, valueFilter),
     [moduleFilter, rows, search, valueFilter],
   );
-  const existingClose = savedPeriods.find((entry) => entry.period === period) ?? null;
   const eligibility = evaluateMonthlyCloseEligibility({
     period,
     now: new Date(),
@@ -285,8 +286,9 @@ function CurrentValuationView({
     userUid: user.uid,
   });
 
-  useEffect(() => subscribeMonthlyValuationSummaries(
-    setSavedPeriods,
+  useEffect(() => subscribeMonthlyValuationPeriod(
+    period,
+    setExistingClose,
     (error) => {
       console.error('No se pudieron consultar los cierres mensuales:', error);
       setClosesSource((current) => ({
@@ -294,11 +296,8 @@ function CurrentValuationView({
         error: 'No se pudieron consultar los cierres mensuales.',
       }));
     },
-    {
-      includeIncomplete: true,
-      onMetadata: (metadata) => setClosesSource(stateFromSnapshot(metadata)),
-    },
-  ), []);
+    (metadata) => setClosesSource(stateFromSnapshot(metadata)),
+  ), [period]);
 
   async function confirmMonthlyClose(earlyConfirmation: string) {
     const latestEligibility = evaluateMonthlyCloseEligibility({
@@ -558,26 +557,53 @@ function HistoricalValuationView() {
   const [selectedPeriod, setSelectedPeriod] = useState('');
   const [items, setItems] = useState<MonthlyValuationItem[]>([]);
   const [loadingSummaries, setLoadingSummaries] = useState(true);
+  const [loadingMoreSummaries, setLoadingMoreSummaries] = useState(false);
+  const [hasMoreSummaries, setHasMoreSummaries] = useState(false);
   const [loadingItems, setLoadingItems] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const summaryCursorRef = useRef<string | null>(null);
+  const loadingSummaryPageRef = useRef(false);
 
-  useEffect(() => subscribeMonthlyValuationSummaries(
-    (nextSummaries) => {
-      setSummaries(nextSummaries);
-      setSelectedPeriod((current) => (
-        current && nextSummaries.some((entry) => entry.period === current)
-          ? current
-          : nextSummaries[0]?.period ?? ''
-      ));
-      setLoadingSummaries(false);
-      setHistoryError('');
-    },
-    (error) => {
-      console.error('No se pudieron cargar los cierres mensuales:', error);
-      setLoadingSummaries(false);
-      setHistoryError('No se pudieron consultar los meses guardados. Verifica los permisos de Firestore.');
-    },
-  ), []);
+  useEffect(() => {
+    let active = true;
+    setLoadingSummaries(true);
+    void loadMonthlyValuationSummaryPage()
+      .then((page) => {
+        if (!active) return;
+        setSummaries(page.summaries);
+        setSelectedPeriod(page.summaries[0]?.period ?? '');
+        summaryCursorRef.current = page.cursor;
+        setHasMoreSummaries(page.hasMore);
+        setHistoryError('');
+      })
+      .catch((error) => {
+        console.error('No se pudieron cargar los cierres mensuales:', error);
+        if (active) setHistoryError('No se pudieron consultar los meses guardados. Verifica los permisos de Firestore.');
+      })
+      .finally(() => {
+        if (active) setLoadingSummaries(false);
+      });
+    return () => { active = false; };
+  }, []);
+
+  async function loadMoreSummaries() {
+    if (loadingSummaryPageRef.current || !hasMoreSummaries) return;
+    loadingSummaryPageRef.current = true;
+    setLoadingMoreSummaries(true);
+    setHistoryError('');
+    try {
+      const page = await loadMonthlyValuationSummaryPage(summaryCursorRef.current);
+      setSummaries((current) => mergeMonthlyValuationSummaryPages(current, page.summaries));
+      summaryCursorRef.current = page.cursor;
+      setHasMoreSummaries(page.hasMore);
+    } catch (error) {
+      console.error('No se pudo cargar otra página de cierres mensuales:', error);
+      setHistoryError('No se pudieron cargar meses anteriores. Intenta nuevamente.');
+    } finally {
+      loadingSummaryPageRef.current = false;
+      setLoadingMoreSummaries(false);
+    }
+  }
 
   useEffect(() => {
     if (!selectedPeriod) {
@@ -636,6 +662,18 @@ function HistoricalValuationView() {
           </select>
         </label>
       </div>
+
+      {hasMoreSummaries && (
+        <div className="history-pagination monthly-history-pagination">
+          <div>
+            <strong>Histórico cargado parcialmente</strong>
+            <span>{summaries.length} meses completos cargados. Hay cierres anteriores disponibles.</span>
+          </div>
+          <button type="button" disabled={loadingMoreSummaries} onClick={() => { void loadMoreSummaries(); }}>
+            {loadingMoreSummaries ? 'Cargando...' : 'Cargar más meses'}
+          </button>
+        </div>
+      )}
 
       {historyError && <div className="alert-line"><AlertTriangle size={18} />{historyError}</div>}
 
