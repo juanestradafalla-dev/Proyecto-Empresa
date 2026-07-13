@@ -111,6 +111,7 @@ export type ReporteMovimientosPayload = {
 export type ExportarReporteResult = {
   canceled: boolean;
   filePath?: string;
+  error?: string;
 };
 
 type UsuarioLookup = Record<string, { nombre: string; cargo: string; email: string }>;

@@ -1,16 +1,31 @@
-const { app, BrowserWindow, Menu, shell, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, ipcMain, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { generarReporteMovimientosExcel } = require('./reporteMovimientosExcel.cjs');
+const {
+  isAllowedExternalUrl,
+  isAllowedNavigationUrl,
+  isAuthorizedIpcEvent,
+  isLoopbackDevServerUrl,
+  createSecureWebPreferences,
+  validateReportPayload,
+} = require('./security.cjs');
 
 const isDev = !app.isPackaged;
 const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
+const startupErrorFile = path.join(__dirname, 'startup-error.html');
+const requestedDevServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5174';
 const useDevServer = isDev && process.env.ELECTRON_DEV === '1';
+const devServerUrl = useDevServer && isLoopbackDevServerUrl(requestedDevServerUrl)
+  ? requestedDevServerUrl
+  : '';
+let mainWindow = null;
 
 function getAppIconPath() {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'icon.ico')
-    : path.join(__dirname, '..', 'build', 'icon.ico');
+    : path.join(__dirname, '..', 'assets', 'icon.ico');
 }
 
 function resolvePortableRoot() {
@@ -27,9 +42,7 @@ function configurePortablePaths() {
   const cacheDir = path.join(dataDir, 'cache');
 
   for (const dir of [dataDir, cacheDir]) {
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   }
 
   app.setPath('userData', dataDir);
@@ -39,68 +52,156 @@ function configurePortablePaths() {
 
 configurePortablePaths();
 
+function navigationOptions() {
+  return {
+    devServerUrl,
+    allowedFileUrls: [
+      pathToFileURL(distIndex).href,
+      pathToFileURL(startupErrorFile).href,
+    ],
+  };
+}
+
+async function openExternalHttpUrl(url) {
+  if (!isAllowedExternalUrl(url)) return;
+  try {
+    await shell.openExternal(url);
+  } catch (error) {
+    console.error('No se pudo abrir el enlace externo autorizado:', error);
+  }
+}
+
+function protectWindowNavigation(window) {
+  const options = navigationOptions();
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedExternalUrl(url)) void openExternalHttpUrl(url);
+    return { action: 'deny' };
+  });
+
+  const blockUnauthorizedNavigation = (event, url) => {
+    if (isAllowedNavigationUrl(url, options)) return;
+    event.preventDefault();
+    if (isAllowedExternalUrl(url)) void openExternalHttpUrl(url);
+  };
+
+  window.webContents.on('will-navigate', blockUnauthorizedNavigation);
+  window.webContents.on('will-redirect', blockUnauthorizedNavigation);
+  window.webContents.on('will-attach-webview', (event) => event.preventDefault());
+}
+
+async function showStartupError(window, message) {
+  console.error(message);
+  if (fs.existsSync(startupErrorFile)) {
+    try {
+      await window.loadFile(startupErrorFile);
+      return;
+    } catch (error) {
+      console.error('No se pudo cargar la pantalla local de recuperación:', error);
+    }
+  }
+  dialog.showErrorBox('No se pudo iniciar Gestión de Almacén', message);
+}
+
+async function loadApplication(window) {
+  if (useDevServer) {
+    if (!devServerUrl) {
+      await showStartupError(window, 'El servidor de desarrollo configurado no es una dirección local autorizada.');
+      return;
+    }
+    try {
+      await window.loadURL(devServerUrl);
+    } catch {
+      await showStartupError(window, 'No se pudo conectar con el servidor local de desarrollo autorizado.');
+    }
+    return;
+  }
+
+  if (!fs.existsSync(distIndex)) {
+    await showStartupError(window, 'No se encontró dist/index.html. Ejecuta npm run build antes de iniciar Electron.');
+    return;
+  }
+
+  try {
+    await window.loadFile(distIndex);
+  } catch {
+    await showStartupError(window, 'El archivo dist/index.html existe, pero no pudo cargarse correctamente.');
+  }
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1360,
     height: 860,
     minWidth: 1180,
     minHeight: 720,
-    title: 'Arles S.A.S. Gestion de Almacen',
+    title: 'Arles S.A.S. Gestión de Almacén',
     icon: getAppIconPath(),
     backgroundColor: '#dbe8db',
     autoHideMenuBar: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: path.join(__dirname, 'preload.cjs'),
-    },
+    webPreferences: createSecureWebPreferences(path.join(__dirname, 'preload.cjs'), isDev),
   });
 
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: 'deny' };
+  mainWindow = window;
+  protectWindowNavigation(window);
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null;
   });
-
-  if (useDevServer) {
-    window.loadURL('http://127.0.0.1:5174');
-  } else if (fs.existsSync(distIndex)) {
-    window.loadFile(distIndex);
-  } else {
-    window.loadURL('http://127.0.0.1:5174');
-  }
+  window.webContents.on('render-process-gone', () => {
+    void showStartupError(window, 'La interfaz se detuvo inesperadamente y se abrió la pantalla local de recuperación.');
+  });
+  void loadApplication(window).catch((error) => {
+    console.error('Fallo inesperado al cargar la ventana principal:', error);
+    void showStartupError(window, 'No se pudo completar la carga segura de la ventana principal.');
+  });
+  return window;
 }
 
-ipcMain.handle('exportar-reporte-movimientos', async (_event, payload) => {
-  const result = await dialog.showSaveDialog({
-    title: 'Guardar reporte de movimientos',
-    defaultPath: payload?.suggestedFileName || 'Reporte_Movimientos_ARLES.xlsx',
-    filters: [{ name: 'Excel', extensions: ['xlsx'] }],
-  });
+function safeExportError(message) {
+  return { canceled: true, error: message };
+}
 
-  if (result.canceled || !result.filePath) {
-    return { canceled: true };
+ipcMain.handle('exportar-reporte-movimientos', async (event, payload) => {
+  if (!isAuthorizedIpcEvent(event, mainWindow, navigationOptions())) {
+    return safeExportError('La solicitud de exportación no provino de la ventana autorizada.');
   }
 
-  let filePath = result.filePath;
-  if (!filePath.toLowerCase().endsWith('.xlsx')) {
-    filePath = `${filePath}.xlsx`;
+  const validated = validateReportPayload(payload);
+  if (!validated.ok) return safeExportError(validated.message);
+
+  try {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Guardar reporte de movimientos',
+      defaultPath: validated.value.suggestedFileName,
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+    });
+
+    if (result.canceled || !result.filePath) return { canceled: true };
+
+    const filePath = result.filePath.toLowerCase().endsWith('.xlsx')
+      ? result.filePath
+      : `${result.filePath}.xlsx`;
+
+    await generarReporteMovimientosExcel({ filePath, payload: validated.value });
+    return { canceled: false, filePath };
+  } catch (error) {
+    console.error('No se pudo completar la exportación del reporte:', error);
+    return safeExportError('No se pudo crear el archivo Excel. Revisa la ubicación seleccionada e intenta nuevamente.');
   }
-
-  await generarReporteMovimientosExcel({
-    filePath,
-    payload: payload ?? {},
-  });
-
-  return { canceled: false, filePath };
 });
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
   createWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch((error) => {
+  console.error('Electron no pudo completar el arranque:', error);
+  dialog.showErrorBox('No se pudo iniciar Gestión de Almacén', 'Ocurrió un error durante el arranque seguro de Electron.');
 });
 
 app.on('window-all-closed', () => {

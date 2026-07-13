@@ -1,5 +1,5 @@
 param(
-  [string]$Source = '..\Icon.png',
+  [string]$Source = '..\branding\logo_gestion_arles.png',
   [string]$Output = 'build\appx'
 )
 

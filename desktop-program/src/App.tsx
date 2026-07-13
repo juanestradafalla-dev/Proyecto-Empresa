@@ -977,7 +977,7 @@ function AppShell({ user }: { user: User }) {
   const movementPaginationStartedRef = useRef(false);
   const loadingMovementPageRef = useRef(false);
   const savingToolStatusIds = useRef(new Set<string>());
-  const isDesktopApp = typeof window !== 'undefined' && Boolean(window.electronAPI?.isElectron);
+  const isDesktopApp = typeof window !== 'undefined' && typeof window.electronAPI?.exportarReporteMovimientos === 'function';
   const closeSourcesReady = areSourcesServerReady(firestoreSources, CLOSE_REQUIRED_SOURCE_KEYS);
   const allSourcesReady = areSourcesServerReady(firestoreSources, FIRESTORE_SOURCE_KEYS);
   const hasCachedFirestoreSource = CLOSE_REQUIRED_SOURCE_KEYS.some((key) => firestoreSources[key].fromCache);
@@ -1717,6 +1717,10 @@ function AppShell({ user }: { user: User }) {
         coverageLabel: 'Historial completo cargado; filtros activos aplicados',
       });
       const result = await exportarReporteMovimientos(payload);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
       if (result.canceled) return;
     } catch {
       setError((current) => current || 'No se pudo generar el reporte Excel. Intenta de nuevo desde el ejecutable de escritorio.');

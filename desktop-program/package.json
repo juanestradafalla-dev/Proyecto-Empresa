@@ -9,19 +9,19 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "verify:package": "node scripts/verify-package.cjs",
     "test": "vitest run",
     "test:rules:unit": "vitest run --config vitest.rules.config.ts",
     "test:rules": "firebase emulators:exec --only firestore --project demo-arles-gestion --config ../firebase.rules-test.json \"npm run test:rules:unit\"",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "npm run build && electron .",
-    "dist:exe": "npm run build && electron-builder --win portable --x64 --config.directories.output=release",
-    "dist:installer": "npm run build && electron-builder --win nsis --x64 --config.directories.output=release",
+    "dist:exe": "npm run build && npm run verify:package && electron-builder --win portable --x64 --config.directories.output=release",
+    "dist:installer": "npm run build && npm run verify:package && electron-builder --win nsis --x64 --config.directories.output=release",
     "dist:portable": "npm run dist:exe",
     "store:assets": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-store-assets.ps1",
-    "dist:store": "npm run store:assets && npm run build && electron-builder --config electron-builder.store.json --win appx --x64",
+    "dist:store": "npm run store:assets && npm run build && npm run verify:package && electron-builder --config electron-builder.store.json --win appx --x64",
     "dist:msix": "npm run dist:store",
     "icon:create": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-arles-icon.ps1",
-    "cert:trust": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-arles-signing-cert.ps1",
     "sign:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign-release.ps1",
     "dist:trusted": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-trusted-release.ps1",
     "admin:inspect": "node admin/inspect.js",
@@ -69,9 +69,6 @@
     "win": {
       "icon": "assets/icon.ico",
       "requestedExecutionLevel": "asInvoker",
-      "signtoolOptions": {
-        "publisherName": "Arles SAS"
-      },
       "target": [
         {
           "target": "portable",
@@ -101,8 +98,7 @@
       "perMachine": false,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico",
-      "include": "build-resources/installer/install-internal-cert.nsh"
+      "installerHeaderIcon": "assets/icon.ico"
     }
   }
 }
