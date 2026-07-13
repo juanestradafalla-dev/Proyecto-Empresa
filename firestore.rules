@@ -23,21 +23,58 @@ service cloud.firestore {
       return get(userPath()).data;
     }
 
+    function userHasActiveStatus() {
+      let data = userData();
+      return !(
+          data.keys().hasAny(["activo"])
+          && data.activo == false
+        )
+        && !(
+          data.keys().hasAny(["estado"])
+          && data.estado in [
+            "inactivo", "Inactivo", "INACTIVO",
+            "desactivado", "Desactivado", "DESACTIVADO",
+            "bloqueado", "Bloqueado", "BLOQUEADO",
+            "suspendido", "Suspendido", "SUSPENDIDO"
+          ]
+        )
+        && (
+          (
+            data.keys().hasAny(["activo"])
+            && data.activo == true
+          )
+          || (
+            data.keys().hasAny(["estado"])
+            && data.estado in ["activo", "Activo", "ACTIVO"]
+          )
+        );
+    }
+
+    function userHasAllowedRole() {
+      let data = userData();
+      let allowedRoles = [
+        "owner", "Owner", "OWNER",
+        "admin", "Admin", "ADMIN",
+        "administrador", "Administrador", "ADMINISTRADOR",
+        "almacenista", "Almacenista", "ALMACENISTA",
+        "operador", "Operador", "OPERADOR"
+      ];
+      return (
+          data.keys().hasAny(["rol"])
+          && data.rol in allowedRoles
+        )
+        || (
+          data.keys().hasAny(["role"])
+          && data.role in allowedRoles
+        );
+    }
+
     function isActiveUser() {
       return isOwner()
         || (
           hasUserDoc()
-          && (
-            userData().activo == true
-            || userData().estado in ["activo", "Activo", "ACTIVO"]
-            || userData().rol in [
-              "owner", "Owner", "OWNER",
-              "admin", "Admin", "ADMIN",
-              "administrador", "Administrador", "ADMINISTRADOR",
-              "almacenista", "Almacenista", "ALMACENISTA",
-              "operador", "Operador", "OPERADOR"
-            ]
-          )
+          && userHasActiveStatus()
+          && userHasAllowedRole()
         );
     }
 

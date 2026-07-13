@@ -10,6 +10,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "test": "vitest run",
+    "test:rules:unit": "vitest run --config vitest.rules.config.ts",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-arles-gestion --config ../firebase.rules-test.json \"npm run test:rules:unit\"",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "npm run build && electron .",
     "dist:exe": "npm run build && electron-builder --win portable --x64 --config.directories.output=release",
@@ -36,6 +38,7 @@
     "vite": "^7.3.0"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "electron": "^42.3.3",

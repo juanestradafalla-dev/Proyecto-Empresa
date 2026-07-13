@@ -1,4 +1,4 @@
-export type ValuationSaveState = 'saving' | 'saved' | 'error';
+export type ValuationSaveState = 'saving' | 'saved' | 'error' | 'conflict';
 
 export type ValuationFilter = 'all' | 'valued' | 'unvalued';
 

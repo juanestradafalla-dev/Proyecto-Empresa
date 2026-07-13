@@ -70,6 +70,34 @@ button:disabled {
   background: linear-gradient(160deg, #d8eadb 0%, var(--soft) 55%, #dce8dc 100%);
 }
 
+.authorization-blocked {
+  align-content: center;
+  gap: 12px;
+  padding: 28px;
+  color: var(--green-900);
+  text-align: center;
+}
+
+.authorization-blocked span {
+  max-width: 520px;
+  color: var(--muted);
+}
+
+.authorization-blocked div {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.authorization-blocked button {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--green-900);
+  font-weight: 800;
+}
+
 .login-shell {
   background:
     radial-gradient(circle at top right, rgba(5, 166, 75, 0.12), transparent 34%),
@@ -921,6 +949,11 @@ h2 {
   border-color: var(--danger);
 }
 
+.valuation-input.conflict {
+  border-color: #b36b00;
+  background: #fff8e8;
+}
+
 .valuation-input input {
   width: 6rem;
   min-width: 0;
@@ -962,6 +995,10 @@ h2 {
 
 .valuation-save-state.error {
   color: var(--danger);
+}
+
+.valuation-save-state.conflict {
+  color: #9a5700;
 }
 
 .valuation-total {
@@ -2251,6 +2288,30 @@ tbody tr:hover {
   font-size: 1.1rem;
   font-weight: 800;
   text-align: right;
+}
+
+.valuation-conflict {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #e1a43b;
+  border-radius: 9px;
+  background: #fff8e8;
+  color: #6f4300;
+}
+
+.valuation-conflict span {
+  line-height: 1.45;
+}
+
+.valuation-conflict button {
+  justify-self: start;
+  padding: 8px 11px;
+  border: 1px solid #c88416;
+  border-radius: 7px;
+  background: white;
+  color: #6f4300;
+  font-weight: 800;
 }
 
 .valuation-modal-actions {

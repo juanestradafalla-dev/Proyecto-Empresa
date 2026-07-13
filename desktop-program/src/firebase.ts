@@ -11,6 +11,7 @@ const firebaseConfig = {
 };
 
 export const firebaseApp = initializeApp(firebaseConfig);
+export const firebaseProjectId = firebaseApp.options.projectId ?? '';
 export const auth = getAuth(firebaseApp);
 export const db = initializeFirestore(firebaseApp, {
   localCache: persistentLocalCache({
