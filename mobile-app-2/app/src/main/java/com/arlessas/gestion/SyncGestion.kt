@@ -168,6 +168,8 @@ internal fun MainActivity.intentarSincronizarPendientes(force: Boolean = false) 
                 var errorMsg = ""
                 
                 val task = when (coleccion) {
+                    PENDIENTE_ENTRADA_EXISTENCIA -> sincronizarEntradaExistenciaPendiente(payloadFinal)
+                    PENDIENTE_ENTRADA_HERRAMIENTA -> sincronizarEntradaHerramientaPendiente(payloadFinal)
                     "herramientas" -> {
                         firestore.collection(coleccion)
                             .document(documentoHerramientaPendiente(payloadFinal))
