@@ -1,6 +1,6 @@
 param(
-  [string]$Source = '..\Icon.png',
-  [string]$Output = 'build\icon.ico'
+  [string]$Source = '..\branding\logo_gestion_arles.png',
+  [string]$Output = 'assets\icon.ico'
 )
 
 $ErrorActionPreference = 'Stop'

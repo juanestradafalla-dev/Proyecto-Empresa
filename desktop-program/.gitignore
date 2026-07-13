@@ -1,4 +1,9 @@
 node_modules
+.env.local
+.env.*.local
+dist
+release
+release-store
 build/certificates/*.pfx
 build/certificates/*.pvk
 *.pfx

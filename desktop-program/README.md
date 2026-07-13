@@ -30,6 +30,10 @@ cd C:\Users\Almacen\AndroidStudioProjects\GestionAndroid\desktop-program
 npm run dist:exe
 ```
 
+Antes de cualquier empaquetado, `npm run verify:package` valida la versión de `package.json`, `package-lock.json`, el icono `assets/icon.ico`, el build local y las exclusiones de archivos sensibles.
+
+El build normal no requiere certificado. La firma es una operación posterior y explícita: configura `ARLES_SIGNING_CERT_THUMBPRINT` con la huella de un certificado de firma existente y ejecuta `npm run sign:release`. El proyecto no crea certificados ni los instala en almacenes raíz o de confianza.
+
 Ese comando genera la salida completa en:
 
 ```text

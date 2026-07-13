@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>No se pudo iniciar Gestión de Almacén</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 32px; background: #edf4ed; color: #17351f; font: 16px/1.55 system-ui, sans-serif; }
+      main { width: min(620px, 100%); padding: 30px; border: 1px solid #c8dcc9; border-radius: 16px; background: white; box-shadow: 0 18px 45px rgba(18, 63, 35, .14); }
+      h1 { margin-top: 0; color: #123f23; }
+      code { padding: 2px 6px; border-radius: 5px; background: #edf5ed; }
+    </style>
+  </head>
+  <body>
+    <main role="alert">
+      <h1>No se pudo cargar el programa</h1>
+      <p>No se encontró o no se pudo abrir el build local, o el servidor de desarrollo autorizado no está disponible.</p>
+      <p>Ejecuta <code>npm run build</code> y vuelve a iniciar Gestión de Almacén. Electron no intentará conectarse silenciosamente a otro servidor.</p>
+    </main>
+  </body>
+</html>
