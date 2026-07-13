@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "npm run build && electron .",
     "dist:exe": "npm run build && electron-builder --win portable --x64 --config.directories.output=release",
@@ -40,7 +41,8 @@
     "electron": "^42.3.3",
     "electron-builder": "^26.15.0",
     "firebase-admin": "^14.0.0",
-    "minimist": "^1.2.8"
+    "minimist": "^1.2.8",
+    "vitest": "^4.1.10"
   },
   "build": {
     "appId": "com.arlessas.gestion.almacen",
