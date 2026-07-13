@@ -1,12 +1,17 @@
 import {
   collection,
   doc,
+  documentId,
   getDocFromServer,
   getDocs,
   getDocsFromServer,
+  limit as firestoreLimit,
   onSnapshot,
+  orderBy,
+  query,
   runTransaction,
   serverTimestamp,
+  startAfter,
   Timestamp,
   writeBatch,
 } from 'firebase/firestore';
@@ -27,6 +32,7 @@ import type { CurrentValuationRow, MonthlyValuationItem, MonthlyValuationSummary
 
 const MONTHLY_CLOSES_COLLECTION = 'cierres_valoracion_inventario';
 const FIRESTORE_SAFE_BATCH_SIZE = 450;
+export const MONTHLY_SUMMARY_PAGE_SIZE = 12;
 
 export class DuplicateMonthlyCloseError extends Error {
   constructor(period: string) {
@@ -115,30 +121,58 @@ function readMonthlySummary(period: string, data: Record<string, unknown>): Mont
   };
 }
 
-export function subscribeMonthlyValuationSummaries(
-  onData: (summaries: MonthlyValuationSummary[]) => void,
+export function subscribeMonthlyValuationPeriod(
+  period: string,
+  onData: (summary: MonthlyValuationSummary | null) => void,
   onError: (error: Error) => void,
-  options: {
-    includeIncomplete?: boolean;
-    onMetadata?: (metadata: MonthlySnapshotMetadata) => void;
-  } = {},
+  onMetadata?: (metadata: MonthlySnapshotMetadata) => void,
 ) {
   return onSnapshot(
-    collection(db, MONTHLY_CLOSES_COLLECTION),
+    doc(db, MONTHLY_CLOSES_COLLECTION, period),
     { includeMetadataChanges: true },
     (snapshot) => {
-      const summaries = snapshot.docs
-        .map((snapshotDoc) => readMonthlySummary(snapshotDoc.id, snapshotDoc.data()))
-        .filter((summary) => options.includeIncomplete || summary.status === 'completo')
-        .sort((left, right) => right.period.localeCompare(left.period));
-      onData(summaries);
-      options.onMetadata?.({
+      onData(snapshot.exists() ? readMonthlySummary(snapshot.id, snapshot.data()) : null);
+      onMetadata?.({
         fromCache: snapshot.metadata.fromCache,
         hasPendingWrites: snapshot.metadata.hasPendingWrites,
       });
     },
     (error) => onError(error),
   );
+}
+
+export type MonthlyValuationSummaryPage = {
+  summaries: MonthlyValuationSummary[];
+  cursor: string | null;
+  hasMore: boolean;
+};
+
+export async function loadMonthlyValuationSummaryPage(
+  cursor: string | null = null,
+  pageSize = MONTHLY_SUMMARY_PAGE_SIZE,
+): Promise<MonthlyValuationSummaryPage> {
+  const source = collection(db, MONTHLY_CLOSES_COLLECTION);
+  const pageQuery = cursor
+    ? query(source, orderBy(documentId(), 'desc'), startAfter(cursor), firestoreLimit(pageSize))
+    : query(source, orderBy(documentId(), 'desc'), firestoreLimit(pageSize));
+  const snapshot = await getDocs(pageQuery);
+  const summaries = snapshot.docs
+    .map((snapshotDoc) => readMonthlySummary(snapshotDoc.id, snapshotDoc.data()))
+    .filter((summary) => summary.status === 'completo');
+  return {
+    summaries,
+    cursor: snapshot.docs.at(-1)?.id ?? cursor,
+    hasMore: snapshot.size === pageSize,
+  };
+}
+
+export function mergeMonthlyValuationSummaryPages(
+  current: readonly MonthlyValuationSummary[],
+  incoming: readonly MonthlyValuationSummary[],
+) {
+  const byPeriod = new Map(current.map((summary) => [summary.period, summary]));
+  incoming.forEach((summary) => byPeriod.set(summary.period, summary));
+  return [...byPeriod.values()].sort((left, right) => right.period.localeCompare(left.period));
 }
 
 export async function loadMonthlyValuationItems(period: string): Promise<MonthlyValuationItem[]> {

@@ -651,6 +651,49 @@ h2 {
   border-color: #f0d49a;
 }
 
+.history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #bed6f0;
+  border-radius: 10px;
+  background: #f1f7fd;
+  color: #174a75;
+}
+
+.history-pagination > div {
+  display: grid;
+  gap: 3px;
+}
+
+.history-pagination span,
+.history-pagination small {
+  font-size: 0.8rem;
+}
+
+.history-pagination button {
+  flex: 0 0 auto;
+  padding: 8px 13px;
+  border: 1px solid #2f74bb;
+  border-radius: 8px;
+  background: white;
+  color: #174a75;
+  font-weight: 800;
+}
+
+.history-pagination.error {
+  border-color: #e7b4ae;
+  background: #fff5f3;
+  color: #8d2d20;
+}
+
+.monthly-history-pagination {
+  margin-bottom: 0;
+}
+
 .submodule-filter-row {
   display: flex;
   align-items: center;
@@ -905,6 +948,20 @@ h2 {
 
 .status-toggle-button:hover {
   background: var(--green-100);
+}
+
+.status-toggle-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.status-update-error {
+  display: block;
+  max-width: 15rem;
+  margin-top: 5px;
+  color: var(--danger);
+  font-size: 0.7rem;
+  line-height: 1.35;
 }
 
 .inventory-table th.col-valuation-unit,
@@ -2824,6 +2881,15 @@ tbody tr:hover {
   .valuation-history-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .history-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .history-pagination button {
+    width: 100%;
   }
 
   .valuation-current-toolbar .search-box,

@@ -1,4 +1,4 @@
-import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDownLeft,
@@ -21,7 +21,19 @@ import {
   X,
 } from 'lucide-react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User } from 'firebase/auth';
-import { collection, doc, onSnapshot, QueryDocumentSnapshot, updateDoc } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  documentId,
+  getDocsFromServer,
+  limit as firestoreLimit,
+  onSnapshot,
+  orderBy,
+  query,
+  QueryDocumentSnapshot,
+  startAfter,
+  updateDoc,
+} from 'firebase/firestore';
 import { auth, db, firebaseProjectId } from './firebase';
 import { verifyUserAuthorization } from './auth/authorization';
 import {
@@ -88,6 +100,24 @@ import {
   fechaExportacionReporte,
   nombreArchivoReporte,
 } from './reporteMovimientosExcel';
+import {
+  filterAndSortMovementView,
+  mergeMovementPages,
+  movementPageHasMore,
+  MOVEMENT_PAGE_SIZE,
+} from './movementView';
+import {
+  beginTallerStatusUpdate,
+  createInitialTallerStatusState,
+  effectiveTallerStatus,
+  isTallerStatusBusy,
+  markTallerStatusWriteAccepted,
+  reconcileTallerStatusSnapshot,
+  rollbackTallerStatusUpdate,
+  sortTallerInventory,
+  tallerStatusRank,
+  type TallerStatusOrder,
+} from './tallerStatus';
 import { brand, inventoryValuationModule, moduleAccent, moduleDescription, modules } from './theme';
 
 const logoSrc = './logo-arles.jpeg';
@@ -172,7 +202,6 @@ type Movement = {
   labor?: string;
   frente?: string;
   horometro?: string;
-  debugExtras?: string;
   responsableEntrega?: string;
 };
 
@@ -184,8 +213,6 @@ type UserProfile = {
 };
 
 type Totals = Record<string, { entradas: number; salidas: number }>;
-
-type StatusOrder = 'default' | 'good-first' | 'maintenance-first';
 
 const retiredToolCodes = new Set(['001', '002', 'QR-001', 'QR-002']);
 
@@ -564,23 +591,6 @@ function readMovementDoc(doc: QueryDocumentSnapshot): Movement {
     ubicacion: textValue(data, 'ubicacion'),
   };
 
-  // Debug temporal para Combustible - visible en la UI para que puedas ver los campos reales sin necesidad de consola
-  if (moduleMatches(modulo, 'Combustible')) {
-    const hasHor = !!movement.horometro;
-    const hasLabor = !!(movement.labor || movement.frente);
-    if (!hasHor && !hasLabor) {
-      const interestingKeys = Object.keys(data).filter(k =>
-        /hor|lab|frent|maq|equi|obra|activ|zona|maquina|equipo|horo/i.test(k)
-      );
-      if (interestingKeys.length > 0) {
-        const pairs = interestingKeys.map(k => `${k}=${JSON.stringify(data[k])}`).join(' | ');
-        (movement as any).debugExtras = pairs;
-        console.log('[DEBUG Combustible sin hor/labor]', doc.id, 'keys interesantes:', interestingKeys);
-        console.log('[DEBUG Combustible raw data]', doc.id, JSON.stringify(data, null, 2));
-      }
-    }
-  }
-
   return movement;
 }
 
@@ -620,34 +630,8 @@ function statusFor(item: InventoryItem, overrideEstado?: string) {
   return { label: 'Disponible', className: 'ok' };
 }
 
-function statusCategory(item: InventoryItem) {
-  const label = statusFor(item).label.toLowerCase();
-  if (label.includes('mant')) return 'maintenance';
-  if (label.includes('disponible') || label.includes('ok') || label.includes('bueno')) return 'good';
-  return 'other';
-}
-
-function statusPriority(item: InventoryItem, order: StatusOrder) {
-  const category = statusCategory(item);
-  if (order === 'good-first') {
-    if (category === 'good') return 0;
-    if (category === 'other') return 1;
-    return 2;
-  }
-  if (order === 'maintenance-first') {
-    if (category === 'maintenance') return 0;
-    if (category === 'other') return 1;
-    return 2;
-  }
-  return 0;
-}
-
 function compareCodes(a: string, b: string) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-}
-
-function compareDate(a: Movement, b: Movement) {
-  return (b.fecha || '').localeCompare(a.fecha || '');
 }
 
 function isEntry(movement: Movement) {
@@ -794,28 +778,6 @@ function dateTextValue(data: Record<string, unknown>, ...keys: string[]) {
   return '';
 }
 
-function dateKeyFromText(value: string) {
-  const text = value.trim();
-  if (!text) return '';
-
-  const iso = text.match(/\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b/);
-  if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
-
-  const dmy = text.match(/\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b/);
-  if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
-
-  return formatDateKey(new Date(text));
-}
-
-function inDateRange(value: string, from: string, to: string) {
-  if (!from && !to) return true;
-  const key = dateKeyFromText(value);
-  if (!key) return false;
-  if (from && key < from) return false;
-  if (to && key > to) return false;
-  return true;
-}
-
 function userDisplayName(rawUser: string, users: Record<string, UserProfile>) {
   const value = rawUser.trim();
   if (!value) return '';
@@ -838,15 +800,6 @@ function movementPersonText(movement: Movement, users: Record<string, UserProfil
   ].filter(Boolean).join(' ');
 }
 
-function movementItemText(movement: Movement) {
-  return [
-    movement.codigo,
-    movement.descripcion,
-    movement.referencia,
-    movement.unidad,
-  ].filter(Boolean).join(' ');
-}
-
 function totalsForItem(item: InventoryItem, totals: Totals) {
   return lookupTotals(inventoryLookupKeys(item), totals);
 }
@@ -855,7 +808,10 @@ function latestExitForItem(movements: Movement[], item: InventoryItem) {
   const keys = new Set(inventoryLookupKeys(item));
   return movements
     .filter((movement) => isExit(movement) && movementLookupKeys(movement).some((key) => keys.has(key)))
-    .sort(compareDate)[0];
+    .sort((left, right) => (
+      (right.fecha || '').localeCompare(left.fecha || '')
+      || left.id.localeCompare(right.id)
+    ))[0];
 }
 
 function expandTallerOccupiedUnits(items: InventoryItem[], movements: Movement[]): OccupiedUnitCard[] {
@@ -982,6 +938,9 @@ function AppShell({ user }: { user: User }) {
   const [aseoInventory, setAseoInventory] = useState<InventoryItem[]>(() => cachedPanelData?.aseoInventory ?? []);
   const [tools, setTools] = useState<InventoryItem[]>(() => cachedPanelData?.tools ?? []);
   const [movements, setMovements] = useState<Movement[]>([]);
+  const [hasMoreMovements, setHasMoreMovements] = useState(false);
+  const [loadingMoreMovements, setLoadingMoreMovements] = useState(false);
+  const [movementHistoryError, setMovementHistoryError] = useState('');
   const [users, setUsers] = useState<Record<string, UserProfile>>({});
   const [valuations, setValuations] = useState<Record<string, number>>({});
   const [valuationRevisions, setValuationRevisions] = useState<Record<string, ManualValuationRevision>>({});
@@ -1005,8 +964,8 @@ function AppShell({ user }: { user: User }) {
   const [exitFiltersOpen, setExitFiltersOpen] = useState(false);
   const [tallerSubmodulo, setTallerSubmodulo] = useState('');
   const [agroquimicosUbicacion, setAgroquimicosUbicacion] = useState('');
-  const [statusOrder, setStatusOrder] = useState<StatusOrder>('default');
-  const [manualStatuses, setManualStatuses] = useState<Record<string, string>>({});
+  const [statusOrder, setStatusOrder] = useState<TallerStatusOrder>('default');
+  const [tallerStatusState, setTallerStatusState] = useState(createInitialTallerStatusState);
   const [lastSync, setLastSync] = useState(() => cachedPanelData?.lastSync ?? '');
   const [online, setOnline] = useState(() => navigator.onLine);
   const [error, setError] = useState('');
@@ -1014,6 +973,10 @@ function AppShell({ user }: { user: User }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const wasFullyLive = useRef(false);
   const savingValuationIds = useRef(new Set<string>());
+  const movementCursorRef = useRef<QueryDocumentSnapshot | null>(null);
+  const movementPaginationStartedRef = useRef(false);
+  const loadingMovementPageRef = useRef(false);
+  const savingToolStatusIds = useRef(new Set<string>());
   const isDesktopApp = typeof window !== 'undefined' && Boolean(window.electronAPI?.isElectron);
   const closeSourcesReady = areSourcesServerReady(firestoreSources, CLOSE_REQUIRED_SOURCE_KEYS);
   const allSourcesReady = areSourcesServerReady(firestoreSources, FIRESTORE_SOURCE_KEYS);
@@ -1035,6 +998,91 @@ function AppShell({ user }: { user: User }) {
     setFirestoreSources((current) => updateSourceWithError(current, source, message));
   }
 
+  function movementPageQuery(cursor?: QueryDocumentSnapshot) {
+    const source = collection(db, 'movimientos');
+    if (cursor) {
+      return query(
+        source,
+        orderBy('fecha', 'desc'),
+        orderBy(documentId(), 'desc'),
+        startAfter(cursor),
+        firestoreLimit(MOVEMENT_PAGE_SIZE),
+      );
+    }
+    return query(
+      source,
+      orderBy('fecha', 'desc'),
+      orderBy(documentId(), 'desc'),
+      firestoreLimit(MOVEMENT_PAGE_SIZE),
+    );
+  }
+
+  function reportMovementPageQuery(cursor?: QueryDocumentSnapshot) {
+    const source = collection(db, 'movimientos');
+    if (cursor) {
+      return query(
+        source,
+        orderBy(documentId(), 'asc'),
+        startAfter(cursor),
+        firestoreLimit(MOVEMENT_PAGE_SIZE),
+      );
+    }
+    return query(source, orderBy(documentId(), 'asc'), firestoreLimit(MOVEMENT_PAGE_SIZE));
+  }
+
+  async function loadMoreMovementHistory() {
+    if (loadingMovementPageRef.current || !movementCursorRef.current || !hasMoreMovements) return;
+    loadingMovementPageRef.current = true;
+    setLoadingMoreMovements(true);
+    setMovementHistoryError('');
+    try {
+      const snapshot = await getDocsFromServer(movementPageQuery(movementCursorRef.current));
+      const nextPage = snapshot.docs.map(readMovementDoc);
+      movementPaginationStartedRef.current = true;
+      setMovements((current) => mergeMovementPages(current, nextPage));
+      movementCursorRef.current = snapshot.docs.at(-1) ?? movementCursorRef.current;
+      setHasMoreMovements(movementPageHasMore(snapshot.size));
+    } catch (loadError) {
+      console.error('No se pudo cargar la siguiente página de movimientos:', loadError);
+      setMovementHistoryError('No se pudo cargar más historial. Revisa la conexión e intenta nuevamente.');
+    } finally {
+      loadingMovementPageRef.current = false;
+      setLoadingMoreMovements(false);
+    }
+  }
+
+  async function loadCompleteMovementHistory() {
+    if (loadingMovementPageRef.current) {
+      throw new Error('Ya se está cargando una página del historial.');
+    }
+    loadingMovementPageRef.current = true;
+    setLoadingMoreMovements(true);
+    setMovementHistoryError('');
+    let accumulated: Movement[] = [];
+    let cursor: QueryDocumentSnapshot | undefined;
+    let more = true;
+    try {
+      while (more) {
+        const snapshot = await getDocsFromServer(reportMovementPageQuery(cursor));
+        const nextPage = snapshot.docs.map(readMovementDoc);
+        accumulated = mergeMovementPages(accumulated, nextPage);
+        cursor = snapshot.docs.at(-1);
+        more = movementPageHasMore(snapshot.size);
+      }
+      movementPaginationStartedRef.current = true;
+      setMovements(accumulated);
+      setHasMoreMovements(false);
+      return accumulated;
+    } catch (loadError) {
+      console.error('No se pudo completar el historial para exportar:', loadError);
+      setMovementHistoryError('No se pudo completar el historial. El reporte no fue generado para evitar datos parciales.');
+      throw loadError;
+    } finally {
+      loadingMovementPageRef.current = false;
+      setLoadingMoreMovements(false);
+    }
+  }
+
   useEffect(() => {
     const unsubscribeInventory = onSnapshot(
       collection(db, 'existencias'),
@@ -1047,10 +1095,19 @@ function AppShell({ user }: { user: User }) {
     );
 
     const unsubscribeMovements = onSnapshot(
-      collection(db, 'movimientos'),
+      movementPageQuery(),
       { includeMetadataChanges: true },
       (snapshot) => {
-        setMovements(snapshot.docs.map(readMovementDoc));
+        const firstPage = snapshot.docs.map(readMovementDoc);
+        setMovements((current) => (
+          movementPaginationStartedRef.current
+            ? mergeMovementPages(current, firstPage)
+            : firstPage
+        ));
+        if (!movementPaginationStartedRef.current) {
+          movementCursorRef.current = snapshot.docs.at(-1) ?? null;
+          setHasMoreMovements(movementPageHasMore(snapshot.size));
+        }
         recordSourceSnapshot('movements', snapshot.metadata);
       },
       () => recordSourceError('movements', 'No se pudo leer. Verifica permisos en Firebase.'),
@@ -1070,7 +1127,13 @@ function AppShell({ user }: { user: User }) {
       collection(db, 'herramientas'),
       { includeMetadataChanges: true },
       (snapshot) => {
-        setTools(snapshot.docs.map(readToolDoc));
+        const nextTools = snapshot.docs.map(readToolDoc);
+        setTools(nextTools);
+        setTallerStatusState((current) => reconcileTallerStatusSnapshot(
+          current,
+          Object.fromEntries(nextTools.map((item) => [item.id, item.estado ?? ''])),
+          !snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites,
+        ));
         recordSourceSnapshot('tools', snapshot.metadata);
       },
       () => recordSourceError('tools', 'No se pudo leer. Verifica permisos en Firebase.'),
@@ -1179,7 +1242,7 @@ function AppShell({ user }: { user: User }) {
     setExitFiltersOpen(false);
     setTallerSubmodulo('');
     setAgroquimicosUbicacion('');
-    setManualStatuses({});
+    setTallerStatusState(createInitialTallerStatusState());
     setSearch('');
     setStatusOrder('default');
     setValuationEditItem(null);
@@ -1211,22 +1274,32 @@ function AppShell({ user }: { user: User }) {
   }
 
   function statusValueForItem(item: InventoryItem) {
-    return manualStatuses[item.id] ?? item.estado ?? '';
+    return effectiveTallerStatus(tallerStatusState, item.id, item.estado ?? '');
   }
 
   async function toggleTallerStatus(item: InventoryItem) {
+    if (savingToolStatusIds.current.has(item.id) || isTallerStatusBusy(tallerStatusState, item.id)) return;
+    const toolId = toolDocumentId(item);
+    if (!toolId) {
+      setError('No se pudo identificar la herramienta que se desea actualizar.');
+      return;
+    }
     const current = statusValueForItem(item);
     const isMaintenance = normalize(current).includes('mant');
     const nextStatus = isMaintenance ? 'Bueno' : 'Mantenimiento';
-    setManualStatuses((prev) => ({ ...prev, [item.id]: nextStatus }));
-
-    const toolId = toolDocumentId(item);
-    if (!toolId) return;
+    savingToolStatusIds.current.add(item.id);
+    setTallerStatusState((state) => beginTallerStatusUpdate(state, item.id, nextStatus));
 
     try {
       await updateDoc(doc(db, 'herramientas', toolId), { estado: nextStatus });
-    } catch (error) {
-      console.error('No pude actualizar el estado del item Taller:', error);
+      setTallerStatusState((state) => markTallerStatusWriteAccepted(state, item.id));
+    } catch (updateError) {
+      console.error('No se pudo actualizar el estado del ítem de Taller:', updateError);
+      const message = 'No se pudo guardar el estado. Se restauró el valor confirmado por Firestore.';
+      setTallerStatusState((state) => rollbackTallerStatusUpdate(state, item.id, message));
+      setError(message);
+    } finally {
+      savingToolStatusIds.current.delete(item.id);
     }
   }
 
@@ -1502,37 +1575,74 @@ function AppShell({ user }: { user: User }) {
       .filter((item) => !(isTallerModule && retiredToolCodes.has(normalizeToolCode(item.codigo))))
       .filter((item) => !isTallerModule || coincideSubmoduloTaller(item.categoria, tallerSubmodulo))
       .filter((item) => !isAgroquimicosModule || coincideUbicacionAgroquimicos(item.ubicacion ?? '', agroquimicosUbicacion));
-  }, [agroquimicosUbicacion, aseoInventory, inventory, isAgroquimicosModule, isTallerModule, module, movements, tallerSubmodulo, toolsInventory]);
+  }, [agroquimicosUbicacion, aseoInventory, inventory, isAgroquimicosModule, isTallerModule, module, tallerSubmodulo, toolsInventory]);
 
   const moduleInventory = useMemo(() => {
     const q = normalize(search);
-    return moduleInventoryBase
-      .filter((item) => {
-        if (!q) return true;
-        return normalize(`${item.codigo} ${item.codigoQr ?? ''} ${item.descripcion} ${item.referencia} ${item.categoria} ${item.subcategoria ?? ''} ${item.ubicacion ?? ''} ${item.caracteristica ?? ''} ${item.unidad}`).includes(q);
-      })
-      .sort((a, b) => {
-        const codeOrder = compareCodes(a.codigo, b.codigo);
-        if (codeOrder !== 0) return codeOrder;
-        if (isTallerModule && statusOrder !== 'default') {
-          const orderDiff = statusPriority(a, statusOrder) - statusPriority(b, statusOrder);
-          if (orderDiff !== 0) return orderDiff;
-        }
-        if (isTallerModule) {
-          return a.descripcion.localeCompare(b.descripcion)
-            || compareCodes(a.codigo, b.codigo);
-        }
-        return a.descripcion.localeCompare(b.descripcion) || a.referencia.localeCompare(b.referencia);
-      });
-  }, [isTallerModule, moduleInventoryBase, search, statusOrder]);
+    const filtered = moduleInventoryBase.filter((item) => {
+      if (!q) return true;
+      return normalize(`${item.codigo} ${item.codigoQr ?? ''} ${item.descripcion} ${item.referencia} ${item.categoria} ${item.subcategoria ?? ''} ${item.ubicacion ?? ''} ${item.caracteristica ?? ''} ${item.unidad}`).includes(q);
+    });
+    if (isTallerModule) {
+      return sortTallerInventory(filtered, statusOrder, statusValueForItem);
+    }
+    return [...filtered].sort((left, right) => (
+      compareCodes(left.codigo, right.codigo)
+      || left.descripcion.localeCompare(right.descripcion)
+      || left.referencia.localeCompare(right.referencia)
+      || left.id.localeCompare(right.id)
+    ));
+  }, [isTallerModule, moduleInventoryBase, search, statusOrder, tallerStatusState]);
 
-  const moduleMovements = useMemo(() => {
-    return movements
-      .filter((movement) => moduleMatches(movement.modulo, module))
-      .filter((movement) => !isTallerModule || movimientoPerteneceSubmoduloTaller(movement, tallerSubmodulo))
-      .filter((movement) => !isAgroquimicosModule || movimientoPerteneceUbicacionAgroquimicos(movement, agroquimicosUbicacion))
-      .sort(compareDate);
-  }, [agroquimicosUbicacion, isAgroquimicosModule, isTallerModule, movements, module, tallerSubmodulo]);
+  const belongsToMovementScope = useCallback((movement: Movement) => (
+    moduleMatches(movement.modulo, module)
+    && (!isTallerModule || movimientoPerteneceSubmoduloTaller(movement, tallerSubmodulo))
+    && (!isAgroquimicosModule || movimientoPerteneceUbicacionAgroquimicos(movement, agroquimicosUbicacion))
+  ), [agroquimicosUbicacion, isAgroquimicosModule, isTallerModule, module, tallerSubmodulo]);
+
+  const tallerStatusByMovementKey = useMemo(() => {
+    const entries: Array<[string, string]> = [];
+    moduleInventoryBase.forEach((item) => {
+      inventoryLookupKeys(item).forEach((key) => entries.push([key, statusValueForItem(item)]));
+    });
+    return new Map(entries);
+  }, [moduleInventoryBase, tallerStatusState]);
+
+  const movementStatusRank = useCallback((movement: Movement) => {
+    if (!isTallerModule || statusOrder === 'default') return 0;
+    const status = movementLookupKeys(movement)
+      .map((key) => tallerStatusByMovementKey.get(key))
+      .find(Boolean) ?? '';
+    return tallerStatusRank(status, statusOrder);
+  }, [isTallerModule, statusOrder, tallerStatusByMovementKey]);
+
+  const scopedMovements = useMemo(() => filterAndSortMovementView(movements, {
+    search: '',
+    dateFrom: '',
+    dateTo: '',
+    code: '',
+    person: '',
+    product: '',
+    belongsToScope: belongsToMovementScope,
+    personText: (movement) => movementPersonText(movement, users),
+  }), [belongsToMovementScope, movements, users]);
+
+  const buildVisibleMovementSource = useCallback((source: readonly Movement[]) => filterAndSortMovementView(source, {
+    search,
+    dateFrom: exitDateFrom,
+    dateTo: exitDateTo,
+    code: exitCode,
+    person: exitPerson,
+    product: exitItem,
+    belongsToScope: belongsToMovementScope,
+    personText: (movement) => movementPersonText(movement, users),
+    statusRank: isTallerModule && statusOrder !== 'default' ? movementStatusRank : undefined,
+  }), [belongsToMovementScope, exitCode, exitDateFrom, exitDateTo, exitItem, exitPerson, isTallerModule, movementStatusRank, search, statusOrder, users]);
+
+  const visibleMovements = useMemo(
+    () => buildVisibleMovementSource(movements),
+    [buildVisibleMovementSource, movements],
+  );
 
   const occupiedUnitCards = useMemo(() => {
     if (!isTallerModule) return [];
@@ -1540,16 +1650,16 @@ function AppShell({ user }: { user: User }) {
       .filter((item) => !retiredToolCodes.has(normalizeToolCode(item.codigo)))
       .filter((item) => !tallerSubmodulo || coincideSubmoduloTaller(item.categoria, tallerSubmodulo))
       .filter((item) => (item.ocupados ?? 0) > 0);
-    return expandTallerOccupiedUnits(occupiedTools, moduleMovements);
-  }, [isTallerModule, moduleMovements, toolsInventory, tallerSubmodulo]);
+    return expandTallerOccupiedUnits(occupiedTools, scopedMovements);
+  }, [isTallerModule, scopedMovements, toolsInventory, tallerSubmodulo]);
 
   const occupiedGroups = useMemo(
     () => groupOccupiedBySubmodule(occupiedUnitCards),
     [occupiedUnitCards],
   );
   const totals = useMemo(
-    () => buildTotals(moduleMovements, isTallerModule ? tallerSubmodulo : ''),
-    [isTallerModule, moduleMovements, tallerSubmodulo],
+    () => buildTotals(scopedMovements, isTallerModule ? tallerSubmodulo : ''),
+    [isTallerModule, scopedMovements, tallerSubmodulo],
   );
   const combustibleFuelStock = useMemo(
     () => (module === 'Combustible' ? combustibleStockByType(moduleInventoryBase) : null),
@@ -1562,25 +1672,13 @@ function AppShell({ user }: { user: User }) {
   );
   const isBodegaRojaView = isTallerModule && esBodegaRojaTaller(tallerSubmodulo);
   const allEntries = useMemo(
-    () => moduleMovements.filter((movement) => movementIsEntry(movement, isTallerModule ? tallerSubmodulo : '')),
-    [isTallerModule, moduleMovements, tallerSubmodulo],
+    () => visibleMovements.filter((movement) => movementIsEntry(movement, isTallerModule ? tallerSubmodulo : '')),
+    [isTallerModule, visibleMovements, tallerSubmodulo],
   );
   const entryModalLimit = isTallerModule ? 200 : 120;
-  const filteredMovementsForExport = useMemo(() => {
-    const codeQuery = normalize(exitCode);
-    const personQuery = normalize(exitPerson);
-    const itemQuery = normalize(exitItem);
-
-    return moduleMovements
-      .filter((movement) => inDateRange(movement.fecha, exitDateFrom, exitDateTo))
-      .filter((movement) => !codeQuery || normalize(movement.codigo).includes(codeQuery))
-      .filter((movement) => !personQuery || normalize(movementPersonText(movement, users)).includes(personQuery))
-      .filter((movement) => !itemQuery || normalize(movementItemText(movement)).includes(itemQuery));
-  }, [exitCode, exitDateFrom, exitDateTo, exitItem, exitPerson, moduleMovements, users]);
-
   const filteredExits = useMemo(
-    () => filteredMovementsForExport.filter((movement) => movementIsExit(movement, isTallerModule ? tallerSubmodulo : '')),
-    [filteredMovementsForExport, isTallerModule, tallerSubmodulo],
+    () => visibleMovements.filter((movement) => movementIsExit(movement, isTallerModule ? tallerSubmodulo : '')),
+    [visibleMovements, isTallerModule, tallerSubmodulo],
   );
 
   async function exportarReporte() {
@@ -1589,7 +1687,12 @@ function AppShell({ user }: { user: User }) {
       return;
     }
 
-    if (moduleMovements.length === 0) {
+    if (!online || !isServerSourceReady(firestoreSources.movements)) {
+      setError('El reporte requiere conexión y la primera página de movimientos confirmada por el servidor.');
+      return;
+    }
+
+    if (!hasMoreMovements && visibleMovements.length === 0) {
       setError(`No hay movimientos para exportar en el módulo ${module}.`);
       return;
     }
@@ -1597,19 +1700,26 @@ function AppShell({ user }: { user: User }) {
     setExportando(true);
     setError('');
     try {
+      const completeHistory = await loadCompleteMovementHistory();
+      const reportMovements = buildVisibleMovementSource(completeHistory);
+      if (reportMovements.length === 0) {
+        setError('No hay movimientos que coincidan con los filtros activos.');
+        return;
+      }
       const payload = crearReporteMovimientos({
         moduleName: module,
         tallerSubmodulo: isTallerModule ? tallerSubmodulo : '',
-        movimientos: moduleMovements,
+        movimientos: reportMovements,
         usuarios: users,
         periodLabel: etiquetaPeriodoReporte(exitDateFrom, exitDateTo),
         exportDate: fechaExportacionReporte(),
         generatedBy: user.email || user.displayName || 'Usuario',
+        coverageLabel: 'Historial completo cargado; filtros activos aplicados',
       });
       const result = await exportarReporteMovimientos(payload);
       if (result.canceled) return;
     } catch {
-      setError('No se pudo generar el reporte Excel. Intenta de nuevo desde el ejecutable de escritorio.');
+      setError((current) => current || 'No se pudo generar el reporte Excel. Intenta de nuevo desde el ejecutable de escritorio.');
     } finally {
       setExportando(false);
     }
@@ -1740,7 +1850,7 @@ function AppShell({ user }: { user: User }) {
                 {isTallerModule && (
                   <label className="status-sort">
                     <span>Ordenar:</span>
-                    <select value={statusOrder} onChange={(event) => setStatusOrder(event.target.value as StatusOrder)}>
+                    <select value={statusOrder} onChange={(event) => setStatusOrder(event.target.value as TallerStatusOrder)}>
                       <option value="default">Sin orden</option>
                       <option value="good-first">Buen estado primero</option>
                       <option value="maintenance-first">Mantenimiento primero</option>
@@ -1749,7 +1859,7 @@ function AppShell({ user }: { user: User }) {
                 )}
                 <button className="tool-button" type="button" onClick={() => setShowEntriesModal(true)}>
                   <ArrowDownLeft size={17} />
-                  {tallerMovementLabels?.entradas ?? 'Entradas'} ({formatNumber(allEntries.length)})
+                  {tallerMovementLabels?.entradas ?? 'Entradas'} ({formatNumber(allEntries.length)}{hasMoreMovements ? '+' : ''})
                 </button>
                 {isTallerModule && (
                   <button className="tool-button" type="button" onClick={() => setShowOccupiedModal(true)}>
@@ -1760,7 +1870,7 @@ function AppShell({ user }: { user: User }) {
                 <button
                   className="tool-button"
                   type="button"
-                  disabled={!isDesktopApp || exportando || moduleMovements.length === 0}
+                  disabled={!isDesktopApp || exportando || !online || !isServerSourceReady(firestoreSources.movements) || (!hasMoreMovements && visibleMovements.length === 0)}
                   onClick={() => { void exportarReporte(); }}
                   title={isDesktopApp ? `Exportar movimientos del módulo ${module} (${nombreArchivoReporte(module)})` : 'Disponible solo en el ejecutable de escritorio'}
                 >
@@ -1785,6 +1895,25 @@ function AppShell({ user }: { user: User }) {
             {message}
           </div>
         ))}
+
+        {!isValuationModule && (hasMoreMovements || loadingMoreMovements || movementHistoryError) && (
+          <div className={`history-pagination ${movementHistoryError ? 'error' : ''}`}>
+            <div>
+              <strong>{hasMoreMovements ? 'Historial cargado parcialmente' : 'Historial actualizado'}</strong>
+              <span>
+                {hasMoreMovements
+                  ? `${formatNumber(movements.length)} movimientos cargados. Hay páginas anteriores disponibles; el Excel las carga antes de exportar.`
+                  : `${formatNumber(movements.length)} movimientos cargados.`}
+              </span>
+              {movementHistoryError && <small>{movementHistoryError}</small>}
+            </div>
+            {hasMoreMovements && (
+              <button type="button" disabled={loadingMoreMovements || !online || !isServerSourceReady(firestoreSources.movements)} onClick={() => { void loadMoreMovementHistory(); }}>
+                {loadingMoreMovements ? 'Cargando...' : 'Cargar más'}
+              </button>
+            )}
+          </div>
+        )}
 
         {usingTallerFallback && (
           <div className="alert-line warning">
@@ -1902,7 +2031,7 @@ function AppShell({ user }: { user: User }) {
           <article>
             <FileSpreadsheet size={20} />
             <span>Movimientos</span>
-            <strong>{moduleMovements.length}</strong>
+            <strong>{visibleMovements.length}{hasMoreMovements ? '+' : ''}</strong>
           </article>
           <article className="valuation-kpi">
             <CircleDollarSign size={20} />
@@ -1969,6 +2098,8 @@ function AppShell({ user }: { user: User }) {
                       const currentStatusValue = statusValueForItem(item);
                       const status = statusFor(item, currentStatusValue);
                       const nextStatus = normalize(currentStatusValue).includes('mant') ? 'Bueno' : 'Mantenimiento';
+                      const statusSaving = isTallerStatusBusy(tallerStatusState, item.id);
+                      const statusError = tallerStatusState.errors[item.id];
                       return (
                         <tr key={item.id}>
                           <td className="code col-code">{item.codigoQr ? item.codigoQr : item.codigo}</td>
@@ -1983,11 +2114,13 @@ function AppShell({ user }: { user: User }) {
                             <button
                               className="status-toggle-button"
                               type="button"
+                              disabled={statusSaving}
                               onClick={() => toggleTallerStatus(item)}
                               title={`Cambiar estado a ${nextStatus}`}
                             >
-                              {`A ${nextStatus}`}
+                              {statusSaving ? 'Guardando...' : `A ${nextStatus}`}
                             </button>
+                            {statusError && <small className="status-update-error">{statusError}</small>}
                           </td>
                         </tr>
                       );
@@ -2263,13 +2396,6 @@ function MovementList({
             {movement.zona && !movement.frente && <small><strong>Zona:</strong> {movement.zona}</small>}
             {movementDetailText(movement) && !movement.labor && !movement.frente && (
               <small>Detalle: {movementDetailText(movement)}</small>
-            )}
-
-            {/* Debug visible en UI para Combustible cuando no se detecta horómetro/labor (temporal para descubrir los nombres de campos en Firestore) */}
-            {movement.debugExtras && (
-              <small style={{ color: '#c00', fontSize: '10px', background: '#fff3cd', padding: '1px 3px' }}>
-                [DEBUG campos reales]: {movement.debugExtras}
-              </small>
             )}
 
             {tone === 'exit' && <small className="movement-user">Registra: {registeredBy?.(movement) || movement.usuario || 'Sin usuario'}</small>}
